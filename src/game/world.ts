@@ -24,22 +24,12 @@ export interface World {
 }
 
 /** 自由モードの初期地形 */
-/**
- * 自由モードの初期地形。
- *
- * 盤面は上下に循環している（下端を出た水と砂が同じX列の上端へ戻る）ので、
- * 左右の岸を高くしたゆるい谷にして流れが1本にまとまるようにしてある。
- * 谷が広すぎると水が幅いっぱいに散り、上端へ戻るときも簾状に広がってしまう。
- */
 export const SANDBOX_TERRAIN: TerrainOp[] = [
-  { type: 'slope', high: 5.2, low: 1.0, dir: 'down' },
-  { type: 'noise', amplitude: 0.16, scale: 3.5, seed: 8801 },
-  // 左右の岸。盤面の外まで伸ばして上下端に継ぎ目が出ないようにする
-  { type: 'plateau', x: -0.15, y: -0.2, w: 0.4, h: 1.4, height: 1.9, blend: 0.16 },
-  { type: 'plateau', x: 0.75, y: -0.2, w: 0.4, h: 1.4, height: 1.9, blend: 0.16 },
-  // 谷の中の起伏。流れが素直に一直線にならないようにする
-  { type: 'hill', x: 0.4, y: 0.32, radius: 0.13, height: 0.6 },
-  { type: 'hill', x: 0.6, y: 0.62, radius: 0.13, height: 0.6 },
+  { type: 'slope', high: 5.0, low: 1.2, dir: 'down' },
+  { type: 'noise', amplitude: 0.22, scale: 3.5, seed: 8801 },
+  { type: 'hill', x: 0.22, y: 0.3, radius: 0.18, height: 1.1 },
+  { type: 'hill', x: 0.78, y: 0.42, radius: 0.2, height: 1.3 },
+  { type: 'carve', x: 0.2, y: 0.74, w: 0.6, h: 0.2, height: 1.35, blend: 0.05 },
 ];
 
 export const SANDBOX_STAGE: StageDef = {

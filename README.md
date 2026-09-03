@@ -172,8 +172,6 @@ releasedSediment = tankSediment * (releasedWater / tankWaterBeforeRelease)
 
 自由モードは `circulationInitialWater: 90` の水が盤面とタンクの間を往復し続けます。
 スライダーを上げるほど盤面側の水が増え、下げるとタンクへ戻るので、水没しません。
-地形は左右の岸を高くしたゆるい谷にしてあります。谷が広いと水が幅いっぱいに散り、
-上端へ戻るときも簾状に広がって1本の川に見えなくなるためです。
 
 ### 曲率・二次流・河岸移動
 
