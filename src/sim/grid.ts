@@ -45,7 +45,12 @@ export class TerrainGrid {
   readonly smoothedVelocityX: Float32Array;
   readonly smoothedVelocityY: Float32Array;
   /** 流向 [rad] と符号付き曲率 [1/m] */
-  readonly flowDirection: Float32Array;
+  /**
+   * 単位化した流向（updateFlowGeometry の平滑化で使い回す作業配列）。
+   * 平滑化の積算結果を元の実装とビット単位で一致させるため Float64 で持つ。
+   */
+  readonly unitVelocityX: Float64Array;
+  readonly unitVelocityY: Float64Array;
   readonly curvature: Float32Array;
   /** 曲率に遅れて追従する符号付き二次流 */
   readonly secondaryFlow: Float32Array;
@@ -110,7 +115,8 @@ export class TerrainGrid {
     ];
     this.smoothedVelocityX = new Float32Array(n);
     this.smoothedVelocityY = new Float32Array(n);
-    this.flowDirection = new Float32Array(n);
+    this.unitVelocityX = new Float64Array(n);
+    this.unitVelocityY = new Float64Array(n);
     this.curvature = new Float32Array(n);
     this.secondaryFlow = new Float32Array(n);
     this.bankSide = new Int8Array(n);
@@ -161,7 +167,8 @@ export class TerrainGrid {
     this.fluxBR.fill(0);
     this.smoothedVelocityX.fill(0);
     this.smoothedVelocityY.fill(0);
-    this.flowDirection.fill(0);
+    this.unitVelocityX.fill(0);
+    this.unitVelocityY.fill(0);
     this.curvature.fill(0);
     this.secondaryFlow.fill(0);
     this.bankSide.fill(0);

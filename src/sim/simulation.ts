@@ -421,6 +421,8 @@ export class Simulation {
     const fluxes = g.fluxes;
     const directionCount = p.diagonalFlowEnabled ? 8 : 4;
 
+
+
     for (let i = 0; i < g.size; i++) {
       const d = dep[i];
       conc[i] = d > p.minDepth ? sed[i] / (d * area) : 0;
@@ -515,6 +517,8 @@ export class Simulation {
     const dep = g.waterDepth;
     const fluxes = g.fluxes;
     const directionCount = p.diagonalFlowEnabled ? 8 : 4;
+
+
     const eps = Math.max(p.minDepth, 1e-4);
 
     for (let y = 0; y < height; y++) {
@@ -560,38 +564,51 @@ export class Simulation {
     const sy = g.smoothedVelocityY;
     const dep = g.waterDepth;
 
+    // 単位流向を1セルにつき1回だけ求めておく。
+    // 3x3 平滑化では同じセルを9回参照するので、ここで正規化しておくと
+    // 平方根と除算の回数が 1/9 になる。無効なセルは 0 にしておけば、
+    // そのまま足しても寄与しない。
+    const ux = g.unitVelocityX;
+    const uy = g.unitVelocityY;
+    const minSpeed = p.curvatureMinSpeed;
+    for (let i = 0; i < g.size; i++) {
+      const vx = g.velocityX[i];
+      const vy = g.velocityY[i];
+      const speed = Math.sqrt(vx * vx + vy * vy);
+      if (speed < minSpeed || dep[i] <= p.minDepth) {
+        ux[i] = 0;
+        uy[i] = 0;
+      } else {
+        ux[i] = vx / speed;
+        uy[i] = vy / speed;
+      }
+    }
+
     for (let y = 0; y < height; y++) {
+      const y0 = y > 0 ? -1 : 0;
+      const y1 = y + 1 < height ? 1 : 0;
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
+        const x0 = x > 0 ? -1 : 0;
+        const x1 = x + 1 < width ? 1 : 0;
         let ax = 0;
         let ay = 0;
-        let wsum = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          const ny = y + oy;
-          if (ny < 0 || ny >= height) continue;
-          for (let ox = -1; ox <= 1; ox++) {
-            const nx = x + ox;
-            if (nx < 0 || nx >= width) continue;
-            const j = ny * width + nx;
-            const vx = g.velocityX[j];
-            const vy = g.velocityY[j];
-            const speed = Math.sqrt(vx * vx + vy * vy);
-            if (speed < p.curvatureMinSpeed || dep[j] <= p.minDepth) continue;
-            const w = ox === 0 && oy === 0 ? 4 : ox === 0 || oy === 0 ? 2 : 1;
-            ax += (vx / speed) * w;
-            ay += (vy / speed) * w;
-            wsum += w;
+        for (let oy = y0; oy <= y1; oy++) {
+          const row = i + oy * width;
+          for (let ox = x0; ox <= x1; ox++) {
+            const j = row + ox;
+            const w = ox === 0 ? (oy === 0 ? 4 : 2) : oy === 0 ? 2 : 1;
+            ax += ux[j] * w;
+            ay += uy[j] * w;
           }
         }
         const mag = Math.sqrt(ax * ax + ay * ay);
-        if (wsum <= 0 || mag < 1e-5) {
+        if (mag < 1e-5) {
           sx[i] = 0;
           sy[i] = 0;
-          g.flowDirection[i] = 0;
         } else {
           sx[i] = ax / mag;
           sy[i] = ay / mag;
-          g.flowDirection[i] = Math.atan2(sy[i], sx[i]);
         }
       }
     }
@@ -791,6 +808,7 @@ export class Simulation {
     g.bankSide.fill(0);
     const morph = p.morphologicalTimeScale;
     if (morph <= 0) return;
+    const inv2dx = 1 / (2 * p.cellSize);
 
     for (let y = 1; y + 1 < height; y++) {
       for (let x = 1; x + 1 < width; x++) {
@@ -840,7 +858,6 @@ export class Simulation {
         const xp = i + 1;
         const ym = i - width;
         const yp = i + width;
-        const inv2dx = 1 / (2 * p.cellSize);
         const sx =
           (g.bedHeight[xp] + g.waterDepth[xp] - g.bedHeight[xm] - g.waterDepth[xm]) * inv2dx;
         const sy =
@@ -888,6 +905,7 @@ export class Simulation {
     const delta = g.scratchDelta;
     delta.fill(0);
     const area = this.cellArea;
+    const inv2dx = 1 / (2 * p.cellSize);
     let externalOut = 0;
     let circulationOut = 0;
 
@@ -900,7 +918,6 @@ export class Simulation {
         const xp = x + 1 < width ? i + 1 : i;
         const ym = y > 0 ? i - width : i;
         const yp = y + 1 < height ? i + width : i;
-        const inv2dx = 1 / (2 * p.cellSize);
         const downX = -(g.bedHeight[xp] - g.bedHeight[xm]) * inv2dx;
         const downY = -(g.bedHeight[yp] - g.bedHeight[ym]) * inv2dx;
         const tx = g.smoothedVelocityX[i];
