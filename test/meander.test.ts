@@ -148,6 +148,52 @@ describe('8近傍流束の方向依存性', () => {
 });
 
 describe('曲率・外岸侵食・内岸堆積', () => {
+  it('水面勾配があっても流速ゼロの水はその場で河床や河岸を掘らない', () => {
+    const sim = new Simulation(11, 11, {
+      meanderDynamics: true,
+      morphologicalTimeScale: 12,
+      criticalShear: 0.1,
+      bankErosionRate: 3e-4,
+    });
+    const g = sim.grid;
+    for (let y = 0; y < g.height; y++) for (let x = 0; x < g.width; x++) {
+      const i = g.index(x, y);
+      g.bedHeight[i] = 1 + x * 0.08;
+      g.waterDepth[i] = 0.2;
+      g.smoothedVelocityY[i] = 1;
+      g.secondaryFlow[i] = 0.4;
+    }
+    const before = Float32Array.from(g.bedHeight);
+    sim.erodeAndDeposit(0.25);
+    sim.applyBankProcesses(0.25);
+    for (let i = 0; i < g.size; i++) {
+      expect(g.bedHeight[i]).toBe(before[i]);
+      expect(g.bedloadSediment[i]).toBe(0);
+      expect(g.bankErosionRecent[i]).toBe(0);
+    }
+  });
+
+  it('同じ勾配でも実際に流れていれば掃流砂として侵食する', () => {
+    const sim = new Simulation(11, 11, {
+      meanderDynamics: true,
+      morphologicalTimeScale: 12,
+      criticalShear: 0.1,
+      capacityRate: 1,
+    });
+    const g = sim.grid;
+    for (let y = 0; y < g.height; y++) for (let x = 0; x < g.width; x++) {
+      const i = g.index(x, y);
+      g.bedHeight[i] = 1 + x * 0.08;
+      g.waterDepth[i] = 0.2;
+      g.velocityX[i] = 0.7;
+    }
+    const i = g.index(5, 5);
+    const before = g.bedHeight[i];
+    sim.erodeAndDeposit(0.25);
+    expect(g.bedHeight[i]).toBeLessThan(before);
+    expect(g.bedloadSediment[i]).toBeGreaterThan(0);
+  });
+
   it('曲がった流れは符号付き曲率と遅れた二次流を作り、外岸だけを強く侵食する', () => {
     const sim = new Simulation(31, 31, {
       meanderDynamics: true,

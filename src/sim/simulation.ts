@@ -701,7 +701,7 @@ export class Simulation {
         if (capacity > capLimit) capacity = capLimit;
         if (!(capacity >= 0)) capacity = 0;
 
-        if (s < capacity) {
+        if (s < capacity && speed > p.curvatureMinSpeed) {
           // --- 侵食 ---
           const excess = shear - p.criticalShear;
           if (excess > 0) {
@@ -734,11 +734,18 @@ export class Simulation {
 
         // 限界掃流力を超えた一部を、河床近傍を動く掃流砂へ移す。
         const bedloadExcess = shear - p.criticalShear;
-        if (p.meanderDynamics && bedloadExcess > 0 && morph > 0) {
-          let e = p.bedloadRate * bedloadExcess * g.erodibility[i] * morph * h;
+        const mobility = Math.max(
+          0,
+          Math.min(1, (speed - p.curvatureMinSpeed) / Math.max(0.05, 0.4 - p.curvatureMinSpeed)),
+        );
+        if (p.meanderDynamics && bedloadExcess > 0 && mobility > 0 && morph > 0) {
+          let e = p.bedloadRate * bedloadExcess * g.erodibility[i] * mobility * morph * h;
           const available = bed[i] - rock[i];
           const cap = p.maxErosionRate * 0.35 * morph * h;
+          // 掃流砂も流れが運べる量まで。静水や極低速域で在庫だけ増えるのを防ぐ。
+          const transportDeficit = Math.max(0, capacity * 0.4 - bedload[i]);
           if (e > cap) e = cap;
+          if (e > transportDeficit) e = transportDeficit;
           if (e > available) e = available;
           if (e > 0) {
             bed[i] -= e;
@@ -793,7 +800,15 @@ export class Simulation {
         const tx = g.smoothedVelocityX[i];
         const ty = g.smoothedVelocityY[i];
         const sec = g.secondaryFlow[i];
-        if (d < p.bankWetDepth || Math.abs(sec) < 1e-4 || (tx === 0 && ty === 0)) continue;
+        const vx = g.velocityX[i];
+        const vy = g.velocityY[i];
+        const speed = Math.sqrt(vx * vx + vy * vy);
+        if (
+          d < p.bankWetDepth ||
+          speed <= p.curvatureMinSpeed ||
+          Math.abs(sec) < 1e-4 ||
+          (tx === 0 && ty === 0)
+        ) continue;
 
         // 正曲率は左曲がりなので外岸は流向右側、負曲率では逆。
         const sign = sec >= 0 ? 1 : -1;
@@ -822,9 +837,6 @@ export class Simulation {
         // 水際より高い外岸の根元だけを削る。岩盤下限は適用時にまとめて制限する。
         const bankRise = g.bedHeight[outer] - g.bedHeight[i];
         if (g.waterDepth[outer] > p.bankWetDepth * 1.5 || bankRise < -0.03) continue;
-        const vx = g.velocityX[i];
-        const vy = g.velocityY[i];
-        const speed = Math.sqrt(vx * vx + vy * vy);
         const xm = i - 1;
         const xp = i + 1;
         const ym = i - width;
@@ -844,7 +856,7 @@ export class Simulation {
           g.erodibility[outer] *
           (1 + p.curvatureErosionGain * Math.abs(sec) * p.cellSize) *
           Math.min(2, d / p.bankWetDepth) *
-          (0.35 + Math.min(2, speed)) *
+          Math.min(2, speed) *
           morph *
           h;
         const rateCap = p.maxErosionRate * 0.45 * morph * h;
