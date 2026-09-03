@@ -96,6 +96,8 @@ export class Session {
   };
 
   private accumulator = 0;
+  private validateTimer = 0;
+  private warnedBudget = false;
   private frameTimes: number[] = [];
   private lowFrames = 0;
   private highFrames = 0;
@@ -230,11 +232,40 @@ export class Session {
     this.perf.simMs = now() - t0;
     this.perf.stepsPerFrame = steps;
 
+    this.watchNumerics(dtReal);
+
     const tracker = this.world.tracker;
     if (tracker && this.mode === 'stage') {
       const dtSim = steps * fixed;
       tracker.accumulateFlood(sim, dtSim);
       tracker.update(sim, dtSim);
+    }
+  }
+
+  /**
+   * 数値破綻と収支のずれを定期的に監視する。
+   * 破綻は検出して修復し、収支が許容範囲を超えたら開発時に気づけるよう警告する。
+   */
+  private watchNumerics(dtReal: number): void {
+    this.validateTimer += dtReal;
+    if (this.validateTimer < 3) return;
+    this.validateTimer = 0;
+
+    const { faults } = this.sim.validate();
+    if (faults > 0) {
+      console.warn(`[river] 数値破綻を ${faults} 件検出して修復しました`);
+    }
+    if (!this.sim.budgetWithinTolerance(1e-4)) {
+      if (!this.warnedBudget) {
+        this.warnedBudget = true;
+        console.warn(
+          '[river] 収支の誤差が許容範囲を超えました',
+          '水:', this.sim.stats.waterError,
+          '土砂:', this.sim.stats.sedimentError,
+        );
+      }
+    } else {
+      this.warnedBudget = false;
     }
   }
 
