@@ -11,6 +11,40 @@
     <meta name="description" content="水と砂で川・谷・中州・扇状地をつくる地形シミュレーションゲーム" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c8a86a'/%3E%3Cpath d='M6 25c4-3 5-8 9-11s7-2 11-6' stroke='%232f8fd6' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
     <title>River — 水と砂の河川地形シミュレーション</title>
+    <style>
+      /* 起動ガード。
+         このファイルは Vite の入力ファイルで、<script src="/src/main.ts"> を指している。
+         ビルドせずにそのまま配信すると、ブラウザは TypeScript を実行できず、
+         CSS も main.ts 経由で読み込むため一切当たらない。
+         その状態で素の HTML が崩れて表示されるのを防ぎ、原因を画面に出す。 */
+      #app {
+        visibility: hidden;
+      }
+      html[data-booted] #app {
+        visibility: visible;
+      }
+      #boot-error {
+        display: none;
+      }
+      html[data-boot-failed] #boot-error {
+        display: block;
+        box-sizing: border-box;
+        position: fixed;
+        inset: 0;
+        margin: 0;
+        padding: 24px;
+        background: #10131a;
+        color: #eef2f7;
+        font-family: system-ui, -apple-system, 'Hiragino Sans', sans-serif;
+        font-size: 15px;
+        line-height: 1.7;
+        overflow-y: auto;
+      }
+      #boot-error code {
+        color: #f0c987;
+        word-break: break-all;
+      }
+    </style>
   </head>
   <body>
     <div id="app">
@@ -63,6 +97,29 @@
       <div id="overlay" class="overlay"></div>
       <div id="toast" class="toast" hidden></div>
     </div>
+    <div id="boot-error">
+      <h1>ゲームを起動できませんでした</h1>
+      <p>
+        ビルドされていない <code>index.html</code> が配信されている可能性が高いです。
+        このファイルは Vite の入力ファイルで <code>/src/main.ts</code> を参照していますが、
+        ブラウザは TypeScript をそのまま実行できません。
+      </p>
+      <p>
+        <code>npm run build</code> で生成した <code>dist/</code> を配信してください。
+        GitHub Pages の場合は Settings → Pages → Source を
+        <code>GitHub Actions</code> にすると、<code>.github/workflows/deploy.yml</code> が
+        自動でビルドして配信します。
+      </p>
+      <p>すでに設定済みなら、ブラウザのキャッシュが残っているだけかもしれません。</p>
+    </div>
+
+    <!-- モジュールの読み込みに失敗しても、この古典スクリプトは実行される -->
+    <script>
+      setTimeout(function () {
+        if (document.documentElement.hasAttribute('data-booted')) return;
+        document.documentElement.setAttribute('data-boot-failed', '');
+      }, 4000);
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

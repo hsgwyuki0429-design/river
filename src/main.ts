@@ -158,6 +158,9 @@ function loop(now: number): void {
 
 // ------------------------------------------------------------ 起動
 
+// index.html の起動ガードへ「JS が動いた」ことを伝える
+document.documentElement.setAttribute('data-booted', '');
+
 session.startSandbox();
 session.mode = 'title';
 ui.syncAll();
