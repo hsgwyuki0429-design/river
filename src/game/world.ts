@@ -66,24 +66,55 @@ export const SANDBOX_STAGE: StageDef = {
   },
 };
 
-/** 小さな非対称だけを与え、蛇行・切断を物理相互作用から観察する循環プリセット。 */
+/**
+ * 蛇行の成長と河道切断を、待たずに観察するためのプリセット。
+ *
+ * 直線から蛇行が自然発生するのを待つと川の時間で何十分もかかるため、
+ * 初期形状としてあらかじめ強く蛇行した流路を刻み、そのうち1つを
+ * 「首の細いループ」にしてある。切断が起きやすい状態から始める。
+ *
+ * 循環する水を絞ってあるのは、水が多いと氾濫原へ広がって流路が
+ * まとまらず、曲がりも切断も起きなくなるため（実測で確認）。
+ *
+ * 実測の目安（川の時間）:
+ *   30秒  蛇行度 1.3
+ *   90秒  蛇行度 1.7 まで急成長
+ *   150〜420秒  三日月湖がたびたび現れる
+ *   330秒  蛇行度 1.8 前後で頭打ち
+ */
 export const MEANDER_SANDBOX_STAGE: StageDef = {
   id: 'meander-sandbox',
   name: '蛇行観察',
-  subtitle: '有限の水と砂が上下循環する長い氾濫原',
-  hint: '循環流量を上げると、外岸侵食と内岸堆積が小さな曲がりを成長させます。',
+  subtitle: '強く曲がった流路から、切断と三日月湖まで',
+  hint: '最初から大きく蛇行している。90秒ほどで曲がりが育ち、そのあと首の細い所が切れて三日月湖が残る。',
   terrain: [
     { type: 'slope', high: 3.2, low: 2.2, dir: 'down' },
     { type: 'noise', amplitude: 0.035, scale: 7, seed: 76123, octaves: 3 },
     {
       type: 'channel',
-      points: [[0.5, 0], [0.508, 0.24], [0.492, 0.5], [0.506, 0.76], [0.5, 1]],
-      width: 0.047,
-      depth: 0.16,
+      points: [
+        [0.5, 0],
+        [0.34, 0.08],
+        [0.68, 0.18],
+        [0.3, 0.28],
+        // ここが首の細いループ。入口と出口が y 方向に近い
+        [0.46, 0.36],
+        [0.84, 0.37],
+        [0.9, 0.4],
+        [0.84, 0.43],
+        [0.46, 0.44],
+        [0.3, 0.52],
+        [0.7, 0.62],
+        [0.32, 0.72],
+        [0.66, 0.82],
+        [0.5, 1],
+      ],
+      width: 0.045,
+      depth: 0.36,
     },
     { type: 'erodibility', x: 0, y: 0, w: 1, h: 1, value: 1 },
   ],
-  sources: [{ id: 'pump', x: 0.5, y: 0.01, radius: 0.055, maxRate: 2.4 }],
+  sources: [{ id: 'pump', x: 0.5, y: 0.01, radius: 0.055, maxRate: 0.9 }],
   zones: [],
   openBoundary: { left: false, right: false, top: false, bottom: false },
   sandBudget: null,
@@ -93,18 +124,19 @@ export const MEANDER_SANDBOX_STAGE: StageDef = {
   minInflow: 0,
   success: [],
   failure: [],
-  presetId: 'meander-v1',
+  presetId: 'meander-v2',
   seed: 76123,
   gridHeightMultiplier: 2,
-  circulationInitialWater: 72,
+  circulationInitialWater: 20,
   params: {
     meanderDynamics: true,
     circulationEnabled: true,
-    morphologicalTimeScale: 10,
+    morphologicalTimeScale: 30,
     criticalShear: 8,
     erosionRate: 2.8e-5,
-    bankErosionRate: 1.2e-5,
-    pointBarDepositionGain: 0.72,
+    bankErosionRate: 3.0e-5,
+    curvatureErosionGain: 3.5,
+    pointBarDepositionGain: 1.1,
   },
 };
 
