@@ -107,6 +107,14 @@ export interface StageDef {
   failure: Condition[];
   /** ステージ固有の物理パラメータ上書き */
   params?: Partial<SimParams>;
+  /** 保存・表示用の地形プリセット識別子 */
+  presetId?: string;
+  /** 再現可能な地形乱数シード */
+  seed?: number;
+  /** 通常品質に対する縦セル数倍率 */
+  gridHeightMultiplier?: number;
+  /** 循環タンクへ与える有限な初期水量 [m^3] */
+  circulationInitialWater?: number;
 }
 
 /** 1つの条件の評価結果 */

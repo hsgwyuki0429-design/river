@@ -39,10 +39,18 @@ export interface SimParams {
   manningN: number;
   /** フルード数の上限（超臨界流の暴走防止） */
   froudeMax: number;
+  /** 斜め4方向を含む8近傍流束を使う */
+  diagonalFlowEnabled: boolean;
   /** これ以下の水深は「乾いている」とみなす [m] */
   minDepth: number;
   /** 蒸発速度 [m/s]。MVPでは既定0 */
   evaporation: number;
+
+  // --- 上下循環境界 ---
+  /** 下端流出を外部タンクへ回収し、上端へポンプで戻す */
+  circulationEnabled: boolean;
+  /** 循環水を上端へ分散する横方向平滑化の強さ 0..1 */
+  circulationSpread: number;
 
   // --- 侵食・運搬・堆積 ---
   /** 水の密度 [kg/m^3] */
@@ -70,6 +78,46 @@ export interface SimParams {
   /** 地形変化の時間スケール倍率（水の速度と地形変化速度の分離） */
   morphologicalTimeScale: number;
 
+  // --- 蛇行・河岸・掃流砂 ---
+  /** 曲率を評価する最低流速 [m/s] */
+  meanderDynamics: boolean;
+  /** 曲率を評価する最低流速 [m/s] */
+  curvatureMinSpeed: number;
+  /** 符号付き曲率の絶対上限 [1/m] */
+  curvatureMax: number;
+  /** 二次流が曲率へ追従する時定数 [s] */
+  secondaryFlowRelaxation: number;
+  /** 曲率から横断方向流れを作る無次元ゲイン */
+  secondaryFlowStrength: number;
+  /** 河岸侵食係数 [m/(Pa*s)] */
+  bankErosionRate: number;
+  /** 曲率による外岸侵食の増幅 [m] */
+  curvatureErosionGain: number;
+  /** 河岸根元が水に接しているとみなす水深 [m] */
+  bankWetDepth: number;
+  /** 内岸砂州の堆積ゲイン [1/s] */
+  pointBarDepositionGain: number;
+  /** 掃流砂への取り込み係数 [m/(Pa*s)] */
+  bedloadRate: number;
+  /** 1秒に移動できる掃流砂の割合 [1/s] */
+  bedloadTransportRate: number;
+  /** 掃流砂が河床へ戻る基準速度 [1/s] */
+  bedloadDepositionRate: number;
+  /** 河床勾配が掃流砂方向へ与える重み */
+  bedSlopeTransportGain: number;
+  /** 二次流が内岸向き掃流砂へ与える重み */
+  transverseBedloadGain: number;
+
+  // --- 三日月湖の読み取り専用検出 ---
+  /** 候補水域の最低水深 [m] */
+  oxbowMinDepth: number;
+  /** 低流速とみなす上限 [m/s] */
+  oxbowMaxSpeed: number;
+  /** 低流速が継続すべき時間 [s] */
+  oxbowMinAge: number;
+  /** 候補連結成分の最小面積 [セル] */
+  oxbowMinArea: number;
+
   // --- 安息角による崩落 ---
   /** 乾いた砂の安息角の正接 (tanθ) */
   reposeTanDry: number;
@@ -93,8 +141,12 @@ export const DEFAULT_PARAMS: SimParams = {
   pipeLength: 1,
   manningN: 0.03,
   froudeMax: 2.5,
+  diagonalFlowEnabled: true,
   minDepth: 1e-4,
   evaporation: 0,
+
+  circulationEnabled: false,
+  circulationSpread: 0.7,
 
   density: 1000,
   criticalShear: 12,
@@ -108,6 +160,26 @@ export const DEFAULT_PARAMS: SimParams = {
   depositionRate: 3.2,
   dryDepositionRate: 8,
   morphologicalTimeScale: 8,
+
+  meanderDynamics: false,
+  curvatureMinSpeed: 0.04,
+  curvatureMax: 0.8,
+  secondaryFlowRelaxation: 1.8,
+  secondaryFlowStrength: 0.75,
+  bankErosionRate: 8e-6,
+  curvatureErosionGain: 2.2,
+  bankWetDepth: 0.025,
+  pointBarDepositionGain: 0.55,
+  bedloadRate: 2.5e-6,
+  bedloadTransportRate: 1.4,
+  bedloadDepositionRate: 0.9,
+  bedSlopeTransportGain: 0.75,
+  transverseBedloadGain: 0.65,
+
+  oxbowMinDepth: 0.035,
+  oxbowMaxSpeed: 0.12,
+  oxbowMinAge: 8,
+  oxbowMinArea: 10,
 
   reposeTanDry: 0.7,
   reposeTanWet: 0.42,
@@ -154,6 +226,11 @@ export interface Budget {
 
   /** 数値破綻の検出回数 */
   numericFaults: number;
+
+  /** 下端からタンクへ入った累積循環水量 [m^3] */
+  waterCirculated: number;
+  /** 下端からタンクへ入った累積循環土砂量 [m^3] */
+  sedimentCirculated: number;
 }
 
 export function createBudget(): Budget {
@@ -167,6 +244,8 @@ export function createBudget(): Budget {
     sedimentOut: 0,
     sedimentInitial: 0,
     numericFaults: 0,
+    waterCirculated: 0,
+    sedimentCirculated: 0,
   };
 }
 
@@ -192,4 +271,23 @@ export interface StepStats {
   depositedVolume: number;
   /** 実行したサブステップ数 */
   substeps: number;
+  /** 循環タンク内の水量 [m^3] */
+  circulationWater: number;
+  /** 循環タンク内の浮遊砂＋掃流砂 [m^3] */
+  circulationSediment: number;
+  /** 盤面内の移動中掃流砂 [m^3] */
+  bedloadVolume: number;
+  /** 河道中心線長 / 上下距離 */
+  sinuosity: number;
+  /** 読み取り専用検出された三日月湖候補数 */
+  oxbowCandidates: number;
+}
+
+/** 盤面外の循環タンク。量はすべて体積 [m^3]。 */
+export interface CirculationState {
+  water: number;
+  suspendedSediment: number;
+  bedloadSediment: number;
+  releasedWater: number;
+  releasedSediment: number;
 }

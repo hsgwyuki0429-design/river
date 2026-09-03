@@ -167,6 +167,11 @@ export class Renderer {
       speed: 0,
       erosion: 0,
       deposition: 0,
+      curvature: 0,
+      secondary: 0,
+      bank: 0,
+      bedload: 0,
+      oxbow: 0,
       shade: 0.707,
     };
 
@@ -229,6 +234,16 @@ export class Renderer {
           g.depositionRecent[i10] * w10 +
           g.depositionRecent[i01] * w01 +
           g.depositionRecent[i11] * w11;
+        smp.curvature =
+          g.curvature[i00] * w00 + g.curvature[i10] * w10 + g.curvature[i01] * w01 + g.curvature[i11] * w11;
+        smp.secondary =
+          g.secondaryFlow[i00] * w00 + g.secondaryFlow[i10] * w10 + g.secondaryFlow[i01] * w01 + g.secondaryFlow[i11] * w11;
+        smp.bank =
+          g.bankSide[i00] * w00 + g.bankSide[i10] * w10 + g.bankSide[i01] * w01 + g.bankSide[i11] * w11;
+        smp.bedload =
+          g.bedloadSediment[i00] * w00 + g.bedloadSediment[i10] * w10 + g.bedloadSediment[i01] * w01 + g.bedloadSediment[i11] * w11;
+        smp.oxbow =
+          g.oxbowCandidate[i00] * w00 + g.oxbowCandidate[i10] * w10 + g.oxbowCandidate[i01] * w01 + g.oxbowCandidate[i11] * w11;
         smp.shade =
           shadeMap[i00] * w00 + shadeMap[i10] * w10 + shadeMap[i01] * w01 + shadeMap[i11] * w11;
 

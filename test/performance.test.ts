@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { QUALITY_PRESETS, BASE_TIME_SCALE, CELL_SIZE } from '../src/game/session.ts';
-import { createWorld } from '../src/game/world.ts';
+import { createWorld, MEANDER_SANDBOX_STAGE } from '../src/game/world.ts';
 import { STAGES } from '../src/game/stages.ts';
 
 /**
@@ -41,4 +41,28 @@ describe('シミュレーション負荷', () => {
       expect(world.sim.budget.numericFaults).toBe(0);
     }, 120000);
   }
+
+  it('蛇行観察プリセットをモバイル低品質で30fps予算内に収める', () => {
+    const q = QUALITY_PRESETS[0];
+    const world = createWorld(MEANDER_SANDBOX_STAGE, {
+      width: q.width,
+      height: q.height * (MEANDER_SANDBOX_STAGE.gridHeightMultiplier ?? 1),
+      cellSize: CELL_SIZE,
+      params: { maxSubsteps: q.maxSubsteps },
+    });
+    world.sim.inflowScale = 1;
+    for (let i = 0; i < 600; i++) world.sim.step(1 / 60);
+    const N = 120;
+    const t0 = performance.now();
+    for (let i = 0; i < N; i++) world.sim.step(1 / 60);
+    const perStep = (performance.now() - t0) / N;
+    const msPerFrame = perStep * BASE_TIME_SCALE;
+    // eslint-disable-next-line no-console
+    console.log(
+      `蛇行観察 ${world.sim.grid.width}×${world.sim.grid.height}: ${perStep.toFixed(3)} ms/step, ` +
+      `1倍速で ${msPerFrame.toFixed(2)} ms/frame`,
+    );
+    expect(msPerFrame).toBeLessThan(33);
+    expect(world.sim.budgetWithinTolerance(1e-4)).toBe(true);
+  }, 120000);
 });

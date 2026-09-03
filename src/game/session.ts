@@ -8,7 +8,13 @@
 import { Simulation } from '../sim/simulation.ts';
 import type { StageDef } from './stage.ts';
 import { STAGES } from './stages.ts';
-import { createWorld, resetWorld, SANDBOX_STAGE, type World } from './world.ts';
+import {
+  createWorld,
+  resetWorld,
+  SANDBOX_STAGE,
+  MEANDER_SANDBOX_STAGE,
+  type World,
+} from './world.ts';
 import { loadFromStorage, saveToStorage } from './saveLoad.ts';
 import type { DebugLayer } from '../render/palette.ts';
 import type { ViewMode } from '../render/renderer.ts';
@@ -66,6 +72,7 @@ export function detectQuality(): number {
 export class Session {
   mode: GameMode = 'title';
   stage: StageDef | null = null;
+  sandboxPreset: StageDef = SANDBOX_STAGE;
   world: World;
   tool: ToolMode = 'raise';
   brushIndex = 1;
@@ -112,7 +119,7 @@ export class Session {
     const q = QUALITY_PRESETS[this.qualityIndex];
     return createWorld(stage, {
       width: q.width,
-      height: q.height,
+      height: Math.round(q.height * (stage.gridHeightMultiplier ?? 1)),
       cellSize: CELL_SIZE,
       params: { maxSubsteps: q.maxSubsteps },
     });
@@ -123,7 +130,7 @@ export class Session {
   }
 
   get activeStage(): StageDef {
-    return this.stage ?? SANDBOX_STAGE;
+    return this.stage ?? this.sandboxPreset;
   }
 
   get speed(): number {
@@ -164,9 +171,22 @@ export class Session {
 
   startSandbox(): void {
     this.stage = null;
+    this.sandboxPreset = SANDBOX_STAGE;
     this.mode = 'sandbox';
     this.world = this.buildWorld(SANDBOX_STAGE);
     this.inflow = SANDBOX_STAGE.initialInflow;
+    this.sim.inflowScale = this.inflow;
+    this.speedIndex = 2;
+    this.accumulator = 0;
+    this.applyMorphScale();
+  }
+
+  startMeanderSandbox(): void {
+    this.stage = null;
+    this.sandboxPreset = MEANDER_SANDBOX_STAGE;
+    this.mode = 'sandbox';
+    this.world = this.buildWorld(MEANDER_SANDBOX_STAGE);
+    this.inflow = MEANDER_SANDBOX_STAGE.initialInflow;
     this.sim.inflowScale = this.inflow;
     this.speedIndex = 2;
     this.accumulator = 0;
@@ -189,7 +209,18 @@ export class Session {
   }
 
   load(): boolean {
-    const ok = loadFromStorage(this.sim);
+    let ok = loadFromStorage(this.sim);
+    if (ok && this.mode === 'sandbox') {
+      const savedPreset = this.sim.presetId;
+      const wanted = savedPreset === MEANDER_SANDBOX_STAGE.presetId
+        ? MEANDER_SANDBOX_STAGE
+        : SANDBOX_STAGE;
+      if (wanted.id !== this.sandboxPreset.id) {
+        this.sandboxPreset = wanted;
+        this.world = this.buildWorld(wanted);
+        ok = loadFromStorage(this.sim);
+      }
+    }
     if (ok) this.inflow = this.sim.inflowScale;
     return ok;
   }
@@ -201,7 +232,8 @@ export class Session {
   }
 
   applyMorphScale(): void {
-    this.sim.params.morphologicalTimeScale = 8 * this.morphScale;
+    const base = this.activeStage.params?.morphologicalTimeScale ?? 8;
+    this.sim.params.morphologicalTimeScale = base * this.morphScale;
   }
 
   /**

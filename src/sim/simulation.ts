@@ -6,13 +6,14 @@
  * 流量はセル内の水量を超えないようスケーリングされるため、水深は負にならない。
  *
  * 1 サブステップの流れ:
- *   1. 水源からの流入
- *   2. 流束の更新（水面差 → 加速、摩擦 → 減衰、フルード数と保有水量で制限）
+ *   1. 水源からの流入、または有限循環タンクからの再投入
+ *   2. 4/8近傍流束の更新（水面差 → 加速、Manning摩擦 → 減衰）
  *   3. 水深の更新 ＋ 浮遊土砂の移流（同じ流束を使うので土砂も保存される）
  *   4. 流速の算出
- *   5. 侵食 / 堆積（掃流力と運搬能力から計算し、bedHeight を実際に増減させる）
- *   6. 安息角による崩落
- *   7. 蒸発（既定 0）
+ *   5. 平滑化流向・曲率・遅れた二次流
+ *   6. 侵食 / 堆積・外岸侵食・内岸堆積・掃流砂移動
+ *   7. 安息角による崩落
+ *   8. 蒸発（既定 0）
  */
 
 import { TerrainGrid } from './grid.ts';
@@ -21,6 +22,7 @@ import {
   cloneParams,
   createBudget,
   type Budget,
+  type CirculationState,
   type SimParams,
   type StepStats,
   type WaterSource,
@@ -30,6 +32,12 @@ import {
 const DRAIN_SPEED = 4;
 /** 侵食計算で使う水面勾配の上限（数値破綻の防止） */
 const MAX_SLOPE = 4;
+const SQRT2 = Math.SQRT2;
+const DIR_X = new Int8Array([-1, 1, 0, 0, -1, 1, -1, 1]);
+const DIR_Y = new Int8Array([0, 0, -1, 1, -1, -1, 1, 1]);
+const DIR_LEN = new Float32Array([1, 1, 1, 1, SQRT2, SQRT2, SQRT2, SQRT2]);
+const DIR_WEIGHT = new Float32Array([1, 1, 1, 1, 1 / SQRT2, 1 / SQRT2, 1 / SQRT2, 1 / SQRT2]);
+const OPPOSITE = new Int8Array([1, 0, 3, 2, 7, 6, 5, 4]);
 
 export class Simulation {
   readonly grid: TerrainGrid;
@@ -40,6 +48,20 @@ export class Simulation {
   inflowScale = 0;
   /** 経過シミュレーション時間 [s] */
   elapsed = 0;
+  /** 盤面外に置く循環タンク。内部循環なので Budget の追加・流出には数えない。 */
+  readonly circulation: CirculationState = {
+    water: 0,
+    suspendedSediment: 0,
+    bedloadSediment: 0,
+    releasedWater: 0,
+    releasedSediment: 0,
+  };
+  /** 下端流出の横方向分布を保ったまま上端へ戻す水量 [m^3]。 */
+  readonly circulationWaterByColumn: Float64Array;
+  /** 地形プリセット名と再現シード（保存用）。 */
+  presetId = 'custom';
+  randomSeed = 0;
+  private oxbowTimer = 0;
 
   readonly stats: StepStats = {
     waterVolume: 0,
@@ -52,6 +74,11 @@ export class Simulation {
     erodedVolume: 0,
     depositedVolume: 0,
     substeps: 0,
+    circulationWater: 0,
+    circulationSediment: 0,
+    bedloadVolume: 0,
+    sinuosity: 1,
+    oxbowCandidates: 0,
   };
 
   constructor(width: number, height: number, params: Partial<SimParams> = {}) {
@@ -59,19 +86,61 @@ export class Simulation {
     this.params = { ...cloneParams(DEFAULT_PARAMS), ...params };
     if (params.openBoundary) this.params.openBoundary = { ...params.openBoundary };
     this.budget = createBudget();
+    this.circulationWaterByColumn = new Float64Array(width);
   }
 
   get cellArea(): number {
     return this.params.cellSize * this.params.cellSize;
   }
 
+  get circulationWater(): number {
+    return this.circulation.water;
+  }
+
+  get circulationSuspendedSediment(): number {
+    return this.circulation.suspendedSediment;
+  }
+
+  get circulationBedloadSediment(): number {
+    return this.circulation.bedloadSediment;
+  }
+
   /** 地形を確定させたあとに呼び、収支の基準値を作る */
   resetBudget(): void {
     this.budget = createBudget();
-    this.budget.waterInitial = this.grid.totalWater(this.cellArea);
-    this.budget.sedimentInitial = this.grid.totalSediment(this.cellArea);
+    this.budget.waterInitial = this.grid.totalWater(this.cellArea) + this.circulation.water;
+    this.budget.sedimentInitial =
+      this.grid.totalSediment(this.cellArea) +
+      this.circulation.suspendedSediment +
+      this.circulation.bedloadSediment;
     this.elapsed = 0;
     this.refreshStats(0);
+  }
+
+  /** 循環モード開始時の有限な水・土砂をタンクへ設定する。 */
+  seedCirculation(water: number, suspendedSediment = 0, bedloadSediment = 0): void {
+    this.circulation.water = Math.max(0, water);
+    this.circulation.suspendedSediment = Math.max(0, suspendedSediment);
+    this.circulation.bedloadSediment = Math.max(0, bedloadSediment);
+    this.circulation.releasedWater = 0;
+    this.circulation.releasedSediment = 0;
+    const src = this.sources[0];
+    if (!src || this.circulation.water <= 0) {
+      const perColumn = this.circulation.water / this.grid.width;
+      this.circulationWaterByColumn.fill(perColumn);
+    } else {
+      let sum = 0;
+      const sigma = Math.max(2, src.radius * 1.8);
+      for (let x = 0; x < this.grid.width; x++) {
+        const dx = (x + 0.5 - src.x) / sigma;
+        const w = Math.exp(-0.5 * dx * dx) + 0.015;
+        this.circulationWaterByColumn[x] = w;
+        sum += w;
+      }
+      for (let x = 0; x < this.grid.width; x++) {
+        this.circulationWaterByColumn[x] *= this.circulation.water / sum;
+      }
+    }
   }
 
   /** 水源からの合計流入量 [m^3/s] */
@@ -97,6 +166,11 @@ export class Simulation {
     this.elapsed += dt;
 
     this.decayVisualAccumulators(dt);
+    this.oxbowTimer += dt;
+    if (this.oxbowTimer >= 0.5) {
+      this.detectOxbows(this.oxbowTimer);
+      this.oxbowTimer = 0;
+    }
     this.refreshStats(dt);
     return this.stats;
   }
@@ -118,11 +192,17 @@ export class Simulation {
   }
 
   private substep(h: number): void {
-    this.addSourceWater(h);
+    if (this.params.circulationEnabled) this.releaseCirculation(h);
+    else this.addSourceWater(h);
     this.updateFlux(h);
     this.applyFluxAndTransport(h);
     this.updateVelocity();
+    if (this.params.meanderDynamics) this.updateFlowGeometry(h);
     this.erodeAndDeposit(h);
+    if (this.params.meanderDynamics) {
+      this.applyBankProcesses(h);
+      this.transportBedload(h);
+    }
     this.applySlippage(h);
     if (this.params.evaporation > 0) this.evaporate(h);
   }
@@ -166,6 +246,67 @@ export class Simulation {
     }
   }
 
+  /**
+   * タンクの水を上端へ戻す。水と各土砂相は同じ released/tank 比で放出するため、
+   * 水だけ・砂だけが先行しない。下端で記録した横分布は近傍平均で滑らかにして使う。
+   */
+  private releaseCirculation(h: number): void {
+    const tank = this.circulation;
+    if (this.inflowScale <= 0 || tank.water <= 0 || this.sources.length === 0) return;
+    const before = tank.water;
+    const requested = this.currentInflow() * h;
+    const releasedWater = Math.min(before, Math.max(0, requested));
+    if (releasedWater <= 0) return;
+    const fraction = releasedWater / before;
+    const releasedSuspended = tank.suspendedSediment * fraction;
+    const releasedBedload = tank.bedloadSediment * fraction;
+    const g = this.grid;
+    const area = this.cellArea;
+    const byCol = this.circulationWaterByColumn;
+    let columnTotal = 0;
+    for (let x = 0; x < g.width; x++) columnTotal += byCol[x];
+    const useRecorded = columnTotal > 1e-12;
+    const mean = useRecorded ? columnTotal / g.width : 1 / g.width;
+    const spread = Math.max(0, Math.min(1, this.params.circulationSpread));
+    let weightTotal = 0;
+    const weights = g.scratchDelta;
+    for (let x = 0; x < g.width; x++) {
+      const l = useRecorded ? byCol[x > 0 ? x - 1 : x] : mean;
+      const c = useRecorded ? byCol[x] : mean;
+      const r = useRecorded ? byCol[x + 1 < g.width ? x + 1 : x] : mean;
+      const smooth = (l + 2 * c + r) * 0.25;
+      const w = (1 - spread) * c + spread * smooth + mean * 0.02;
+      weights[x] = w;
+      weightTotal += w;
+    }
+    if (weightTotal <= 0) weightTotal = g.width;
+
+    for (let x = 0; x < g.width; x++) {
+      const share = (weightTotal > 0 ? weights[x] / weightTotal : 1 / g.width);
+      const water = releasedWater * share;
+      const susp = releasedSuspended * share;
+      const bedload = releasedBedload * share;
+      // 2列に分け、上端一列への集中と格子ノイズを抑える。
+      const i0 = x;
+      const i1 = g.height > 1 ? g.width + x : i0;
+      g.waterDepth[i0] += (water * 0.72) / area;
+      g.suspendedSediment[i0] += (susp * 0.72) / area;
+      g.bedloadSediment[i0] += (bedload * 0.72) / area;
+      g.waterDepth[i1] += (water * 0.28) / area;
+      g.suspendedSediment[i1] += (susp * 0.28) / area;
+      g.bedloadSediment[i1] += (bedload * 0.28) / area;
+      if (useRecorded) byCol[x] = Math.max(0, byCol[x] * (1 - fraction));
+    }
+    tank.water -= releasedWater;
+    tank.suspendedSediment -= releasedSuspended;
+    tank.bedloadSediment -= releasedBedload;
+    tank.releasedWater += releasedWater;
+    tank.releasedSediment += releasedSuspended + releasedBedload;
+    if (tank.water < 1e-12) tank.water = 0;
+    if (tank.suspendedSediment < 1e-12) tank.suspendedSediment = 0;
+    if (tank.bedloadSediment < 1e-12) tank.bedloadSediment = 0;
+  }
+
   // ---------------------------------------------------------------- 流束
 
   private updateFlux(h: number): void {
@@ -176,25 +317,21 @@ export class Simulation {
     const dep = g.waterDepth;
     const area = this.cellArea;
     const cs = p.cellSize;
-    // 重力による加速の係数（断面積は方向ごとの hFlow から決める）
-    const accelBase = (h * p.fluxGain * cs * p.gravity) / p.pipeLength;
-    // Manning 摩擦（半陰的）の係数
-    const fricBase = (h * p.gravity * p.manningN * p.manningN) / cs;
+    const accelBase = h * p.fluxGain * cs * p.gravity;
+    const fricBase = h * p.gravity * p.manningN * p.manningN;
     const froude = p.froudeMax * cs;
     const ob = p.openBoundary;
     const hMin = 4e-3;
+    const fluxes = g.fluxes;
+    const directionCount = p.diagonalFlowEnabled ? 8 : 4;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
         const d = dep[i];
 
-        // 乾いたセルは流束を落とす（境界での数値破綻を避ける）
         if (d <= p.minDepth) {
-          g.fluxL[i] = 0;
-          g.fluxR[i] = 0;
-          g.fluxT[i] = 0;
-          g.fluxB[i] = 0;
+          for (let k = 0; k < directionCount; k++) fluxes[k][i] = 0;
           continue;
         }
 
@@ -202,21 +339,18 @@ export class Simulation {
         const surf = bi + d;
         let total = 0;
 
-        for (let k = 0; k < 4; k++) {
+        for (let k = 0; k < directionCount; k++) {
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
           let j = -1;
           let open = false;
-          if (k === 0) {
-            if (x > 0) j = i - 1;
-            else open = ob.left;
-          } else if (k === 1) {
-            if (x < width - 1) j = i + 1;
-            else open = ob.right;
-          } else if (k === 2) {
-            if (y > 0) j = i - width;
-            else open = ob.top;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            j = ny * width + nx;
           } else {
-            if (y < height - 1) j = i + width;
-            else open = ob.bottom;
+            if (nx < 0 && ob.left) open = true;
+            if (nx >= width && ob.right) open = true;
+            if (ny < 0 && ob.top) open = true;
+            if (ny >= height && (ob.bottom || p.circulationEnabled)) open = true;
           }
 
           let dh: number;
@@ -237,43 +371,35 @@ export class Simulation {
             hFlow = 0;
           }
 
-          let f = k === 0 ? g.fluxL[i] : k === 1 ? g.fluxR[i] : k === 2 ? g.fluxT[i] : g.fluxB[i];
+          let f = fluxes[k][i];
 
           if (hFlow <= 0) {
             f = 0;
           } else {
-            // 重力加速: df = dt * A * g * dh / l,  A = fluxGain * cellSize * hFlow
-            f += accelBase * hFlow * dh;
+            const pipeLength = p.pipeLength * DIR_LEN[k];
+            // 斜めは距離 sqrt(2)、接続幅 1/sqrt(2) とし、コピー流束の過剰を防ぐ。
+            f += (accelBase * DIR_WEIGHT[k] * hFlow * dh) / pipeLength;
             if (f < 0) f = 0;
             if (f > 0) {
-              // Manning 摩擦: f_new = f / (1 + K f),  K = dt*g*n^2 / (cellSize * hFlow^(7/3))
               const he = hFlow > hMin ? hFlow : hMin;
               const h73 = he * he * Math.cbrt(he);
-              f = f / (1 + (fricBase / h73) * f);
-              // フルード数制限（超臨界流の暴走防止）
-              const fmax = froude * Math.sqrt(p.gravity * hFlow) * hFlow;
+              f = f / (1 + (fricBase * DIR_LEN[k] / (cs * h73)) * f);
+              const fmax = froude * DIR_WEIGHT[k] * Math.sqrt(p.gravity * hFlow) * hFlow;
               if (f > fmax) f = fmax;
               if (!(f >= 0)) f = 0;
             }
           }
 
           total += f;
-          if (k === 0) g.fluxL[i] = f;
-          else if (k === 1) g.fluxR[i] = f;
-          else if (k === 2) g.fluxT[i] = f;
-          else g.fluxB[i] = f;
+          fluxes[k][i] = f;
         }
 
-        // セル内の水量を超えて流出させない
         const outVol = total * h;
         if (outVol > 0) {
           const capacity = d * area;
           if (outVol > capacity) {
             const kk = capacity / outVol;
-            g.fluxL[i] *= kk;
-            g.fluxR[i] *= kk;
-            g.fluxT[i] *= kk;
-            g.fluxB[i] *= kk;
+            for (let k = 0; k < directionCount; k++) fluxes[k][i] *= kk;
           }
         }
       }
@@ -294,10 +420,8 @@ export class Simulation {
     const conc = g.scratchDelta; // 単位体積あたりの土砂（高さ換算）
     const newDepth = g.scratchDepth;
     const newSed = g.scratchSediment;
-    const fl = g.fluxL;
-    const fr = g.fluxR;
-    const ft = g.fluxT;
-    const fb = g.fluxB;
+    const fluxes = g.fluxes;
+    const directionCount = p.diagonalFlowEnabled ? 8 : 4;
 
     for (let i = 0; i < g.size; i++) {
       const d = dep[i];
@@ -306,49 +430,37 @@ export class Simulation {
 
     let waterOut = 0;
     let sedimentOut = 0;
+    let circulatedWater = 0;
+    let circulatedSediment = 0;
     let faults = 0;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
-        const outVol = (fl[i] + fr[i] + ft[i] + fb[i]) * h;
+        let outVol = 0;
         let inVol = 0;
         let inSed = 0;
-
-        if (x > 0) {
-          const j = i - 1;
-          const v = fr[j] * h;
-          inVol += v;
-          inSed += conc[j] * v;
-        }
-        if (x < width - 1) {
-          const j = i + 1;
-          const v = fl[j] * h;
-          inVol += v;
-          inSed += conc[j] * v;
-        }
-        if (y > 0) {
-          const j = i - width;
-          const v = fb[j] * h;
-          inVol += v;
-          inSed += conc[j] * v;
-        }
-        if (y < height - 1) {
-          const j = i + width;
-          const v = ft[j] * h;
-          inVol += v;
-          inSed += conc[j] * v;
-        }
-
-        // 盤面外へ出た分を記録
-        let escaped = 0;
-        if (x === 0) escaped += fl[i] * h;
-        if (x === width - 1) escaped += fr[i] * h;
-        if (y === 0) escaped += ft[i] * h;
-        if (y === height - 1) escaped += fb[i] * h;
-        if (escaped > 0) {
-          waterOut += escaped;
-          sedimentOut += conc[i] * escaped * area;
+        for (let k = 0; k < directionCount; k++) {
+          const vOut = fluxes[k][i] * h;
+          outVol += vOut;
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const j = ny * width + nx;
+            const vIn = fluxes[OPPOSITE[k]][j] * h;
+            inVol += vIn;
+            inSed += conc[j] * vIn;
+          } else if (vOut > 0) {
+            const sedVolume = conc[i] * vOut * area;
+            if (p.circulationEnabled && ny >= height) {
+              circulatedWater += vOut;
+              circulatedSediment += sedVolume;
+              this.circulationWaterByColumn[x] += vOut;
+            } else {
+              waterOut += vOut;
+              sedimentOut += sedVolume;
+            }
+          }
         }
 
         const outSed = conc[i] * outVol;
@@ -387,6 +499,12 @@ export class Simulation {
 
     this.budget.waterOut += waterOut;
     this.budget.sedimentOut += sedimentOut;
+    if (circulatedWater > 0) {
+      this.circulation.water += circulatedWater;
+      this.circulation.suspendedSediment += circulatedSediment;
+      this.budget.waterCirculated += circulatedWater;
+      this.budget.sedimentCirculated += circulatedSediment;
+    }
     this.budget.numericFaults += faults;
   }
 
@@ -396,10 +514,8 @@ export class Simulation {
     const p = this.params;
     const { width, height } = g;
     const dep = g.waterDepth;
-    const fl = g.fluxL;
-    const fr = g.fluxR;
-    const ft = g.fluxT;
-    const fb = g.fluxB;
+    const fluxes = g.fluxes;
+    const directionCount = p.diagonalFlowEnabled ? 8 : 4;
     const eps = Math.max(p.minDepth, 1e-4);
 
     for (let y = 0; y < height; y++) {
@@ -411,13 +527,19 @@ export class Simulation {
           g.velocityY[i] = 0;
           continue;
         }
-        const leftIn = x > 0 ? fr[i - 1] : 0;
-        const rightIn = x < width - 1 ? fl[i + 1] : 0;
-        const topIn = y > 0 ? fb[i - width] : 0;
-        const bottomIn = y < height - 1 ? ft[i + width] : 0;
-
-        const dWx = (leftIn - fl[i] + fr[i] - rightIn) * 0.5;
-        const dWy = (topIn - ft[i] + fb[i] - bottomIn) * 0.5;
+        let dWx = 0;
+        let dWy = 0;
+        for (let k = 0; k < directionCount; k++) {
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
+          const incoming =
+            nx >= 0 && nx < width && ny >= 0 && ny < height
+              ? fluxes[OPPOSITE[k]][ny * width + nx]
+              : 0;
+          const net = (fluxes[k][i] - incoming) * 0.5 / DIR_LEN[k];
+          dWx += net * DIR_X[k];
+          dWy += net * DIR_Y[k];
+        }
 
         const denom = p.cellSize * Math.max(d, eps);
         let vx = dWx / denom;
@@ -430,9 +552,93 @@ export class Simulation {
     }
   }
 
+  /** 平滑化流向、符号付き曲率、下流へ遅れて残る二次流を更新する。 */
+  updateFlowGeometry(h: number): void {
+    const g = this.grid;
+    const p = this.params;
+    const { width, height } = g;
+    const sx = g.smoothedVelocityX;
+    const sy = g.smoothedVelocityY;
+    const dep = g.waterDepth;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        let ax = 0;
+        let ay = 0;
+        let wsum = 0;
+        for (let oy = -1; oy <= 1; oy++) {
+          const ny = y + oy;
+          if (ny < 0 || ny >= height) continue;
+          for (let ox = -1; ox <= 1; ox++) {
+            const nx = x + ox;
+            if (nx < 0 || nx >= width) continue;
+            const j = ny * width + nx;
+            const vx = g.velocityX[j];
+            const vy = g.velocityY[j];
+            const speed = Math.sqrt(vx * vx + vy * vy);
+            if (speed < p.curvatureMinSpeed || dep[j] <= p.minDepth) continue;
+            const w = ox === 0 && oy === 0 ? 4 : ox === 0 || oy === 0 ? 2 : 1;
+            ax += (vx / speed) * w;
+            ay += (vy / speed) * w;
+            wsum += w;
+          }
+        }
+        const mag = Math.sqrt(ax * ax + ay * ay);
+        if (wsum <= 0 || mag < 1e-5) {
+          sx[i] = 0;
+          sy[i] = 0;
+          g.flowDirection[i] = 0;
+        } else {
+          sx[i] = ax / mag;
+          sy[i] = ay / mag;
+          g.flowDirection[i] = Math.atan2(sy[i], sx[i]);
+        }
+      }
+    }
+
+    const inv2dx = 1 / (2 * p.cellSize);
+    const target = g.scratchDelta2;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const vx = g.velocityX[i];
+        const vy = g.velocityY[i];
+        const speed = Math.sqrt(vx * vx + vy * vy);
+        if (speed < p.curvatureMinSpeed || dep[i] <= p.minDepth) {
+          g.curvature[i] = 0;
+          target[i] = 0;
+          continue;
+        }
+        const xm = x > 0 ? i - 1 : i;
+        const xp = x + 1 < width ? i + 1 : i;
+        const ym = y > 0 ? i - width : i;
+        const yp = y + 1 < height ? i + width : i;
+        const tx = sx[i];
+        const ty = sy[i];
+        const dtxds = tx * (sx[xp] - sx[xm]) * inv2dx + ty * (sx[yp] - sx[ym]) * inv2dx;
+        const dtyds = tx * (sy[xp] - sy[xm]) * inv2dx + ty * (sy[yp] - sy[ym]) * inv2dx;
+        let curve = tx * dtyds - ty * dtxds;
+        if (curve > p.curvatureMax) curve = p.curvatureMax;
+        else if (curve < -p.curvatureMax) curve = -p.curvatureMax;
+        if (!Number.isFinite(curve)) curve = 0;
+        g.curvature[i] = curve;
+
+        const ux = Math.max(0, Math.min(width - 1, Math.round(x - tx)));
+        const uy = Math.max(0, Math.min(height - 1, Math.round(y - ty)));
+        const upstream = g.secondaryFlow[uy * width + ux];
+        target[i] = p.secondaryFlowStrength * (curve * 0.68 + upstream * 0.32);
+      }
+    }
+    const alpha = 1 - Math.exp(-h / Math.max(0.05, p.secondaryFlowRelaxation));
+    for (let i = 0; i < g.size; i++) {
+      g.secondaryFlow[i] += (target[i] - g.secondaryFlow[i]) * alpha;
+    }
+  }
+
   // ------------------------------------------------------- 侵食・堆積
 
-  private erodeAndDeposit(h: number): void {
+  erodeAndDeposit(h: number): void {
     const g = this.grid;
     const p = this.params;
     const { width, height } = g;
@@ -440,6 +646,7 @@ export class Simulation {
     const rock = g.bedrockHeight;
     const dep = g.waterDepth;
     const sed = g.suspendedSediment;
+    const bedload = g.bedloadSediment;
     const area = this.cellArea;
     const morph = p.morphologicalTimeScale;
     const inv2dx = 1 / (2 * p.cellSize);
@@ -524,10 +731,238 @@ export class Simulation {
             deposited += dp * area;
           }
         }
+
+        // 限界掃流力を超えた一部を、河床近傍を動く掃流砂へ移す。
+        const bedloadExcess = shear - p.criticalShear;
+        if (p.meanderDynamics && bedloadExcess > 0 && morph > 0) {
+          let e = p.bedloadRate * bedloadExcess * g.erodibility[i] * morph * h;
+          const available = bed[i] - rock[i];
+          const cap = p.maxErosionRate * 0.35 * morph * h;
+          if (e > cap) e = cap;
+          if (e > available) e = available;
+          if (e > 0) {
+            bed[i] -= e;
+            bedload[i] += e;
+            g.erosionRecent[i] += e;
+            eroded += e * area;
+          }
+        }
+
+        // 前サブステップで内岸と判定された低速域では点砂州堆積を促進する。
+        const currentSediment = sed[i];
+        if (g.bankSide[i] < 0 && currentSediment > 0 && morph > 0) {
+          const slow = 1 / (1 + speed * speed);
+          let dp =
+            p.pointBarDepositionGain *
+            Math.abs(g.secondaryFlow[i]) *
+            slow *
+            currentSediment *
+            morph *
+            h;
+          if (dp > currentSediment) dp = currentSediment;
+          if (dp > 0) {
+            bed[i] += dp;
+            sed[i] -= dp;
+            g.depositedSediment[i] += dp;
+            g.depositionRecent[i] += dp;
+            deposited += dp * area;
+          }
+        }
       }
     }
 
     this.stats.erodedVolume += eroded;
+    this.stats.depositedVolume += deposited;
+  }
+
+  /** 曲率の符号から外岸・内岸を決め、河岸根元だけを保存的に侵食する。 */
+  applyBankProcesses(h: number): void {
+    const g = this.grid;
+    const p = this.params;
+    const { width, height } = g;
+    const demand = g.scratchDelta;
+    demand.fill(0);
+    g.bankSide.fill(0);
+    const morph = p.morphologicalTimeScale;
+    if (morph <= 0) return;
+
+    for (let y = 1; y + 1 < height; y++) {
+      for (let x = 1; x + 1 < width; x++) {
+        const i = y * width + x;
+        const d = g.waterDepth[i];
+        const tx = g.smoothedVelocityX[i];
+        const ty = g.smoothedVelocityY[i];
+        const sec = g.secondaryFlow[i];
+        if (d < p.bankWetDepth || Math.abs(sec) < 1e-4 || (tx === 0 && ty === 0)) continue;
+
+        // 正曲率は左曲がりなので外岸は流向右側、負曲率では逆。
+        const sign = sec >= 0 ? 1 : -1;
+        const outerX = ty * sign;
+        const outerY = -tx * sign;
+        let outer = -1;
+        let inner = -1;
+        let bestOuter = -Infinity;
+        let bestInner = -Infinity;
+        for (let k = 0; k < 8; k++) {
+          const dot = (DIR_X[k] * outerX + DIR_Y[k] * outerY) / DIR_LEN[k];
+          const j = (y + DIR_Y[k]) * width + x + DIR_X[k];
+          if (dot > bestOuter) {
+            bestOuter = dot;
+            outer = j;
+          }
+          if (-dot > bestInner) {
+            bestInner = -dot;
+            inner = j;
+          }
+        }
+        if (inner >= 0) g.bankSide[inner] = -1;
+        if (outer < 0) continue;
+        g.bankSide[outer] = 1;
+
+        // 水際より高い外岸の根元だけを削る。岩盤下限は適用時にまとめて制限する。
+        const bankRise = g.bedHeight[outer] - g.bedHeight[i];
+        if (g.waterDepth[outer] > p.bankWetDepth * 1.5 || bankRise < -0.03) continue;
+        const vx = g.velocityX[i];
+        const vy = g.velocityY[i];
+        const speed = Math.sqrt(vx * vx + vy * vy);
+        const xm = i - 1;
+        const xp = i + 1;
+        const ym = i - width;
+        const yp = i + width;
+        const inv2dx = 1 / (2 * p.cellSize);
+        const sx =
+          (g.bedHeight[xp] + g.waterDepth[xp] - g.bedHeight[xm] - g.waterDepth[xm]) * inv2dx;
+        const sy =
+          (g.bedHeight[yp] + g.waterDepth[yp] - g.bedHeight[ym] - g.waterDepth[ym]) * inv2dx;
+        const slope = Math.min(MAX_SLOPE, Math.sqrt(sx * sx + sy * sy));
+        const shear = p.density * p.gravity * d * slope;
+        const excess = shear - p.criticalShear;
+        if (excess <= 0) continue;
+        let e =
+          p.bankErosionRate *
+          excess *
+          g.erodibility[outer] *
+          (1 + p.curvatureErosionGain * Math.abs(sec) * p.cellSize) *
+          Math.min(2, d / p.bankWetDepth) *
+          (0.35 + Math.min(2, speed)) *
+          morph *
+          h;
+        const rateCap = p.maxErosionRate * 0.45 * morph * h;
+        if (e > rateCap) e = rateCap;
+        if (e > 0) demand[outer] += e;
+      }
+    }
+
+    let eroded = 0;
+    for (let i = 0; i < g.size; i++) {
+      let e = demand[i];
+      if (e <= 0) continue;
+      const available = g.bedHeight[i] - g.bedrockHeight[i];
+      if (e > available) e = available;
+      if (e <= 0) continue;
+      g.bedHeight[i] -= e;
+      g.suspendedSediment[i] += e;
+      g.erosionRecent[i] += e;
+      g.bankErosionRecent[i] += e;
+      eroded += e * this.cellArea;
+    }
+    this.stats.erodedVolume += eroded;
+  }
+
+  /** 主流・下り勾配・内岸向き二次流を合成し、掃流砂を差分バッファで移す。 */
+  transportBedload(h: number): void {
+    const g = this.grid;
+    const p = this.params;
+    const { width, height } = g;
+    const delta = g.scratchDelta;
+    delta.fill(0);
+    const area = this.cellArea;
+    let externalOut = 0;
+    let circulationOut = 0;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const q = g.bedloadSediment[i];
+        if (q <= 0) continue;
+        const xm = x > 0 ? i - 1 : i;
+        const xp = x + 1 < width ? i + 1 : i;
+        const ym = y > 0 ? i - width : i;
+        const yp = y + 1 < height ? i + width : i;
+        const inv2dx = 1 / (2 * p.cellSize);
+        const downX = -(g.bedHeight[xp] - g.bedHeight[xm]) * inv2dx;
+        const downY = -(g.bedHeight[yp] - g.bedHeight[ym]) * inv2dx;
+        const tx = g.smoothedVelocityX[i];
+        const ty = g.smoothedVelocityY[i];
+        const sec = g.secondaryFlow[i];
+        const sign = sec >= 0 ? 1 : -1;
+        const innerX = -ty * sign;
+        const innerY = tx * sign;
+        const mx = tx + downX * p.bedSlopeTransportGain + innerX * Math.abs(sec) * p.transverseBedloadGain;
+        const my = ty + downY * p.bedSlopeTransportGain + innerY * Math.abs(sec) * p.transverseBedloadGain;
+        const mag = Math.sqrt(mx * mx + my * my);
+        if (mag < 1e-6) continue;
+        let best = -1;
+        let bestDot = 0;
+        for (let k = 0; k < 8; k++) {
+          const dot = (mx * DIR_X[k] + my * DIR_Y[k]) / (mag * DIR_LEN[k]);
+          if (dot > bestDot) {
+            bestDot = dot;
+            best = k;
+          }
+        }
+        if (best < 0) continue;
+        let move = q * Math.min(1, p.bedloadTransportRate * h) * bestDot;
+        if (move > q) move = q;
+        if (move <= 0) continue;
+        const nx = x + DIR_X[best];
+        const ny = y + DIR_Y[best];
+        delta[i] -= move;
+        g.bedloadTransportRecent[i] += move;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          delta[ny * width + nx] += move;
+        } else if (p.circulationEnabled && ny >= height) {
+          circulationOut += move * area;
+        } else {
+          const open =
+            (nx < 0 && p.openBoundary.left) ||
+            (nx >= width && p.openBoundary.right) ||
+            (ny < 0 && p.openBoundary.top) ||
+            (ny >= height && p.openBoundary.bottom);
+          if (open) externalOut += move * area;
+          else delta[i] += move;
+        }
+      }
+    }
+    for (let i = 0; i < g.size; i++) {
+      g.bedloadSediment[i] += delta[i];
+      if (g.bedloadSediment[i] < 0 && g.bedloadSediment[i] > -1e-7) g.bedloadSediment[i] = 0;
+    }
+    if (circulationOut > 0) {
+      this.circulation.bedloadSediment += circulationOut;
+      this.budget.sedimentCirculated += circulationOut;
+    }
+    this.budget.sedimentOut += externalOut;
+
+    // 低速域、とくに内岸では掃流砂を河床へ戻す。
+    let deposited = 0;
+    for (let i = 0; i < g.size; i++) {
+      const q = g.bedloadSediment[i];
+      if (q <= 0) continue;
+      const vx = g.velocityX[i];
+      const vy = g.velocityY[i];
+      const speed = Math.sqrt(vx * vx + vy * vy);
+      const inner = g.bankSide[i] < 0 ? 1 + p.pointBarDepositionGain : 1;
+      let drop = q * p.bedloadDepositionRate * inner * h / (1 + speed * 1.5);
+      if (g.waterDepth[i] <= p.minDepth) drop = Math.max(drop, q * Math.min(1, p.dryDepositionRate * h));
+      if (drop > q) drop = q;
+      if (drop <= 0) continue;
+      g.bedloadSediment[i] -= drop;
+      g.bedHeight[i] += drop;
+      g.depositedSediment[i] += drop;
+      g.depositionRecent[i] += drop;
+      deposited += drop * area;
+    }
     this.stats.depositedVolume += deposited;
   }
 
@@ -547,9 +982,6 @@ export class Simulation {
     const delta = g.scratchDelta;
     delta.fill(0);
 
-    const dxs = [-1, 1, 0, 0];
-    const dys = [0, 0, -1, 1];
-    const excess = [0, 0, 0, 0];
     const rate = Math.min(1, p.slippageRate * h);
 
     for (let y = 0; y < height; y++) {
@@ -566,21 +998,22 @@ export class Simulation {
         let sum = 0;
         let maxExcess = 0;
         for (let k = 0; k < 4; k++) {
-          const nx = x + dxs[k];
-          const ny = y + dys[k];
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
           let e = 0;
           if (nx >= 0 && ny >= 0 && nx < width && ny < height) {
             e = bi - bed[ny * width + nx] - maxDrop;
             if (e < 0) e = 0;
           }
-          excess[k] = e;
           sum += e;
           if (e > maxExcess) maxExcess = e;
         }
         if (sum <= 0) continue;
 
         // 一度に動かす量: 速度制限・過剰量の半分・掘れる残量 の最小
-        let move = rate * sum;
+        // 河岸根元を直前に削られた場所は少し速く、ただし一括崩壊はさせない。
+        const bankBoost = g.bankErosionRecent[i] > 1e-6 ? 1.35 : 1;
+        let move = rate * bankBoost * sum;
         const half = 0.5 * maxExcess;
         if (move > half) move = half;
         if (move > avail) move = avail;
@@ -589,10 +1022,12 @@ export class Simulation {
         delta[i] -= move;
         const inv = move / sum;
         for (let k = 0; k < 4; k++) {
-          if (excess[k] <= 0) continue;
-          const nx = x + dxs[k];
-          const ny = y + dys[k];
-          delta[ny * width + nx] += excess[k] * inv;
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const e = bi - bed[ny * width + nx] - maxDrop;
+          if (e <= 0) continue;
+          delta[ny * width + nx] += e * inv;
         }
       }
     }
@@ -617,6 +1052,105 @@ export class Simulation {
     this.budget.waterEvaporated += lost * area;
   }
 
+  /**
+   * 低速水域を連結成分として検出する読み取り専用パス。
+   * 地形・水深は一切変更せず、表示用マスクと統計だけを更新する。
+   */
+  detectOxbows(dt: number): number {
+    const g = this.grid;
+    const p = this.params;
+    const { width, height } = g;
+    const wetDepth = p.oxbowMinDepth;
+    for (let i = 0; i < g.size; i++) {
+      const vx = g.velocityX[i];
+      const vy = g.velocityY[i];
+      const speed = Math.sqrt(vx * vx + vy * vy);
+      if (g.waterDepth[i] >= wetDepth && speed <= p.oxbowMaxSpeed) {
+        g.lowVelocityAge[i] += dt;
+      } else {
+        g.lowVelocityAge[i] = Math.max(0, g.lowVelocityAge[i] - dt * 2);
+      }
+    }
+
+    const queue = g.scratchQueue;
+    const main = g.mainChannel;
+    const visit = g.scratchVisit;
+    main.fill(0);
+    visit.fill(0);
+    g.oxbowCandidate.fill(0);
+    let head = 0;
+    let tail = 0;
+    for (let x = 0; x < width; x++) {
+      const i = x;
+      if (g.waterDepth[i] >= wetDepth) {
+        main[i] = 1;
+        queue[tail++] = i;
+      }
+    }
+    while (head < tail) {
+      const i = queue[head++];
+      const x = i % width;
+      const y = Math.floor(i / width);
+      for (let k = 0; k < 8; k++) {
+        const nx = x + DIR_X[k];
+        const ny = y + DIR_Y[k];
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const j = ny * width + nx;
+        if (main[j] || g.waterDepth[j] < wetDepth) continue;
+        main[j] = 1;
+        queue[tail++] = j;
+      }
+    }
+
+    let count = 0;
+    for (let start = 0; start < g.size; start++) {
+      if (
+        visit[start] ||
+        main[start] ||
+        g.waterDepth[start] < wetDepth ||
+        g.lowVelocityAge[start] < p.oxbowMinAge
+      ) continue;
+      head = 0;
+      tail = 0;
+      visit[start] = 1;
+      queue[tail++] = start;
+      let minX = width;
+      let maxX = 0;
+      let minY = height;
+      let maxY = 0;
+      while (head < tail) {
+        const i = queue[head++];
+        const x = i % width;
+        const y = Math.floor(i / width);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        for (let k = 0; k < 8; k++) {
+          const nx = x + DIR_X[k];
+          const ny = y + DIR_Y[k];
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const j = ny * width + nx;
+          if (
+            visit[j] || main[j] || g.waterDepth[j] < wetDepth ||
+            g.lowVelocityAge[j] < p.oxbowMinAge
+          ) continue;
+          visit[j] = 1;
+          queue[tail++] = j;
+        }
+      }
+      const spanX = maxX - minX + 1;
+      const spanY = maxY - minY + 1;
+      const elongation = Math.max(spanX, spanY) / Math.max(1, Math.min(spanX, spanY));
+      if (tail >= p.oxbowMinArea && elongation >= 1.35) {
+        count++;
+        for (let q = 0; q < tail; q++) g.oxbowCandidate[queue[q]] = 1;
+      }
+    }
+    this.stats.oxbowCandidates = count;
+    return count;
+  }
+
   // ------------------------------------------------------------ 統計
 
   private decayVisualAccumulators(dt: number): void {
@@ -625,6 +1159,8 @@ export class Simulation {
     for (let i = 0; i < g.size; i++) {
       g.erosionRecent[i] *= k;
       g.depositionRecent[i] *= k;
+      g.bankErosionRecent[i] *= k;
+      g.bedloadTransportRecent[i] *= k;
     }
   }
 
@@ -636,12 +1172,14 @@ export class Simulation {
     let wet = 0;
     let maxDepth = 0;
     let maxSpeed = 0;
+    let bedload = 0;
     const minDepth = this.params.minDepth;
 
     for (let i = 0; i < g.size; i++) {
       const d = g.waterDepth[i];
       water += d;
-      sediment += g.bedHeight[i] + g.suspendedSediment[i];
+      sediment += g.bedHeight[i] + g.suspendedSediment[i] + g.bedloadSediment[i];
+      bedload += g.bedloadSediment[i];
       if (d > minDepth) {
         wet++;
         if (d > maxDepth) maxDepth = d;
@@ -659,10 +1197,44 @@ export class Simulation {
     st.wetCells = wet;
     st.maxDepth = maxDepth;
     st.maxSpeed = maxSpeed;
+    st.circulationWater = this.circulation.water;
+    st.circulationSediment =
+      this.circulation.suspendedSediment + this.circulation.bedloadSediment;
+    st.bedloadVolume = bedload * area;
     st.waterError =
-      st.waterVolume - (b.waterInitial + b.waterAdded - b.waterOut - b.waterEvaporated);
+      st.waterVolume + st.circulationWater -
+      (b.waterInitial + b.waterAdded - b.waterOut - b.waterEvaporated);
     st.sedimentError =
-      st.sedimentVolume - (b.sedimentInitial + b.sandAdded - b.sandRemoved - b.sedimentOut);
+      st.sedimentVolume + st.circulationSediment -
+      (b.sedimentInitial + b.sandAdded - b.sandRemoved - b.sedimentOut);
+
+    // 各行の水深重心を結んだ長さから蛇行度を測る（描画・物理へのフィードバックなし）。
+    let path = 0;
+    let firstY = -1;
+    let lastY = -1;
+    let prevX = 0;
+    let prevY = 0;
+    for (let y = 0; y < g.height; y++) {
+      let sum = 0;
+      let weightedX = 0;
+      const row = y * g.width;
+      for (let x = 0; x < g.width; x++) {
+        const d = g.waterDepth[row + x];
+        if (d <= minDepth) continue;
+        sum += d;
+        weightedX += (x + 0.5) * d;
+      }
+      if (sum <= 0) continue;
+      const cx = (weightedX / sum) * this.params.cellSize;
+      const cy = (y + 0.5) * this.params.cellSize;
+      if (firstY < 0) firstY = y;
+      if (lastY >= 0) path += Math.hypot(cx - prevX, cy - prevY);
+      prevX = cx;
+      prevY = cy;
+      lastY = y;
+    }
+    const direct = firstY >= 0 && lastY > firstY ? (lastY - firstY) * this.params.cellSize : 0;
+    st.sinuosity = direct > 0 ? Math.max(1, path / direct) : 1;
   }
 
   // -------------------------------------------------- プレイヤーの編集
@@ -712,10 +1284,11 @@ export class Simulation {
 
   /** デバッグ用: 収支の誤差が許容範囲を超えていないか */
   budgetWithinTolerance(tolerance = 1e-4): boolean {
-    const scale = Math.max(1, this.stats.waterVolume, this.stats.sedimentVolume);
+    const waterScale = Math.max(1, this.stats.waterVolume + this.stats.circulationWater);
+    const sedimentScale = Math.max(1, this.stats.sedimentVolume + this.stats.circulationSediment);
     return (
-      Math.abs(this.stats.waterError) / scale < tolerance &&
-      Math.abs(this.stats.sedimentError) / scale < tolerance
+      Math.abs(this.stats.waterError) / waterScale < tolerance &&
+      Math.abs(this.stats.sedimentError) / sedimentScale < tolerance
     );
   }
 
@@ -734,6 +1307,10 @@ export class Simulation {
       }
       if (!(g.suspendedSediment[i] >= 0)) {
         g.suspendedSediment[i] = 0;
+        faults++;
+      }
+      if (!(g.bedloadSediment[i] >= 0)) {
+        g.bedloadSediment[i] = 0;
         faults++;
       }
       if (!Number.isFinite(g.velocityX[i])) {

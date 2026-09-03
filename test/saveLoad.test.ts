@@ -70,4 +70,34 @@ describe('保存・読み込み', () => {
     expect(b.budget.waterInitial).toBeCloseTo(b.stats.waterVolume, 5);
     expect(b.stats.waterError).toBeCloseTo(0, 6);
   });
+
+  it('v2は循環タンク・掃流砂・二次流・パラメータ・プリセットとシードを復元する', () => {
+    const a = build(24, 36);
+    a.params.circulationEnabled = true;
+    a.params.meanderDynamics = true;
+    a.grid.bedloadSediment[17] = 0.03;
+    a.grid.secondaryFlow[17] = -0.2;
+    a.grid.lowVelocityAge[17] = 4;
+    a.presetId = 'meander-v1';
+    a.randomSeed = 76123;
+    a.seedCirculation(7, 0.4, 0.2);
+    a.resetBudget();
+    const data = serialize(a);
+    expect(data.version).toBe(2);
+
+    const b = new Simulation(24, 36, { cellSize: 0.5, pipeLength: 0.5 });
+    b.sources = [{ id: 's', x: 0, y: 0, radius: 3, maxRate: 1.2 }];
+    deserialize(b, data);
+    expect(b.params.circulationEnabled).toBe(true);
+    expect(b.params.meanderDynamics).toBe(true);
+    expect(b.grid.bedloadSediment[17]).toBeCloseTo(0.03, 6);
+    expect(b.grid.secondaryFlow[17]).toBeCloseTo(-0.2, 6);
+    expect(b.grid.lowVelocityAge[17]).toBeCloseTo(4, 6);
+    expect(b.circulation.water).toBeCloseTo(7, 6);
+    expect(b.circulation.suspendedSediment).toBeCloseTo(0.4, 6);
+    expect(b.circulation.bedloadSediment).toBeCloseTo(0.2, 6);
+    expect(b.presetId).toBe('meander-v1');
+    expect(b.randomSeed).toBe(76123);
+    expect(b.budgetWithinTolerance(1e-4)).toBe(true);
+  });
 });

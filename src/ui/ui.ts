@@ -12,6 +12,7 @@ import { describeInflow, WaterSlider } from './waterSlider.ts';
 export interface UIHandlers {
   onStartStage: (id: string) => void;
   onStartSandbox: () => void;
+  onStartMeanderSandbox: () => void;
   onReset: () => void;
   onSave: () => void;
   onLoad: () => void;
@@ -28,6 +29,11 @@ const DEBUG_LAYERS: { id: DebugLayer; label: string }[] = [
   { id: 'sediment', label: '浮遊土砂' },
   { id: 'erosion', label: '侵食' },
   { id: 'deposition', label: '堆積' },
+  { id: 'curvature', label: '曲率' },
+  { id: 'secondary', label: '二次流' },
+  { id: 'bank', label: '外岸/内岸' },
+  { id: 'bedload', label: '掃流砂' },
+  { id: 'oxbow', label: '三日月湖' },
 ];
 
 export class GameUI {
@@ -135,6 +141,7 @@ export class GameUI {
     this.syncSegments();
     this.slider.setMin(this.session.activeStage.minInflow);
     this.slider.set(this.session.inflow, false);
+    this.slider.setCirculationMode(this.session.sim.params.circulationEnabled);
     this.el.viewBtn.textContent = this.session.view === 'top' ? '斜め視点' : '真上視点';
   }
 
@@ -188,7 +195,7 @@ export class GameUI {
     const sim = s.sim;
     const st = sim.stats;
     const items: string[] = [];
-    items.push(`流入 <b>${sim.currentInflow().toFixed(2)}</b> m³/s`);
+    items.push(`${sim.params.circulationEnabled ? '循環流量' : '流入'} <b>${sim.currentInflow().toFixed(2)}</b> m³/s`);
     items.push(`水量 <b>${st.waterVolume.toFixed(1)}</b> m³`);
     items.push(`浮遊土砂 <b>${suspended(sim).toFixed(2)}</b> m³`);
     items.push(`流失 <b>${sim.budget.waterOut.toFixed(0)}</b> m³`);
@@ -233,11 +240,13 @@ export class GameUI {
       <div><b>${s.perf.fps.toFixed(0)} fps</b> ・ sim ${s.perf.simMs.toFixed(1)}ms ・ draw ${s.perf.renderMs.toFixed(1)}ms</div>
       <div>格子 ${sim.grid.width}×${sim.grid.height} (${s.perf.quality}) ・ step/frame ${s.perf.stepsPerFrame} ・ sub ${st.substeps} ・ 描画 ${(s.renderScale * 100).toFixed(0)}%</div>
       <div>水 <b>${st.waterVolume.toFixed(2)}</b> m³ ・ 追加 ${b.waterAdded.toFixed(1)} ・ 流出 ${b.waterOut.toFixed(1)}</div>
-      <div class="${bad(wErr, st.waterVolume)}">水収支誤差 ${wErr.toExponential(2)} m³</div>
-      <div>土砂 <b>${st.sedimentVolume.toFixed(1)}</b> m³ ・ 盛 ${b.sandAdded.toFixed(1)} ・ 削 ${b.sandRemoved.toFixed(1)} ・ 流出 ${b.sedimentOut.toFixed(2)}</div>
-      <div class="${bad(sErr, st.sedimentVolume)}">土砂収支誤差 ${sErr.toExponential(2)} m³</div>
+      <div>循環槽 水 ${st.circulationWater.toFixed(2)} m³ ・ 土砂 ${st.circulationSediment.toFixed(3)} m³ ・ 累積循環 ${b.waterCirculated.toFixed(1)} m³</div>
+      <div class="${bad(wErr, st.waterVolume + st.circulationWater)}">水収支誤差 ${wErr.toExponential(2)} m³</div>
+      <div>土砂 <b>${st.sedimentVolume.toFixed(1)}</b> m³ ・ 掃流 ${st.bedloadVolume.toFixed(3)} ・ 盛 ${b.sandAdded.toFixed(1)} ・ 削 ${b.sandRemoved.toFixed(1)} ・ 流出 ${b.sedimentOut.toFixed(2)}</div>
+      <div class="${bad(sErr, st.sedimentVolume + st.circulationSediment)}">土砂収支誤差 ${sErr.toExponential(2)} m³</div>
       <div>侵食 ${st.erodedVolume.toFixed(4)} ・ 堆積 ${st.depositedVolume.toFixed(4)} m³/frame</div>
       <div>最大水深 ${st.maxDepth.toFixed(3)} m ・ 最大流速 ${st.maxSpeed.toFixed(2)} m/s ・ 濡れ ${st.wetCells}</div>
+      <div>蛇行度 ${st.sinuosity.toFixed(3)} ・ 三日月湖候補 ${st.oxbowCandidates}</div>
       <div class="${b.numericFaults > 0 ? 'bad' : ''}">数値破綻 ${b.numericFaults}</div>
       <div>地形変化倍率 ${sim.params.morphologicalTimeScale.toFixed(1)}</div>`;
   }
@@ -281,6 +290,8 @@ export class GameUI {
       <h2>自由モード</h2>
       <button class="big-btn primary" data-act="sandbox">箱庭をはじめる
         <small>制限なし。保存・読み込み・水源の移動ができます</small></button>
+      <button class="big-btn" data-act="meander">蛇行観察をはじめる
+        <small>長い氾濫原で有限の水と砂が上下循環します</small></button>
       ${hasSave() ? '<button class="big-btn" data-act="load">保存した地形を読み込む</button>' : ''}
       <h2>操作</h2>
       <p>・指1本でなぞる：砂を盛る／削る（長く押すほど大きく変化）<br />
@@ -300,6 +311,9 @@ export class GameUI {
     }
     sheet.querySelector('[data-act="sandbox"]')?.addEventListener('click', () =>
       this.handlers.onStartSandbox(),
+    );
+    sheet.querySelector('[data-act="meander"]')?.addEventListener('click', () =>
+      this.handlers.onStartMeanderSandbox(),
     );
     sheet.querySelector('[data-act="load"]')?.addEventListener('click', () => {
       this.handlers.onStartSandbox();

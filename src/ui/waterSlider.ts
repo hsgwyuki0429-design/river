@@ -94,6 +94,12 @@ export class WaterSlider {
     return this.value;
   }
 
+  setCirculationMode(enabled: boolean): void {
+    this.root.setAttribute('aria-label', enabled ? '循環ポンプ流量' : '水源の流量');
+    const caption = this.root.querySelector('.ws-caption');
+    if (caption) caption.textContent = enabled ? '循環流量' : '水量';
+  }
+
   private render(): void {
     const pct = this.value * 100;
     this.fill.style.height = `${pct}%`;

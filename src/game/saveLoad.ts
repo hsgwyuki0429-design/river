@@ -6,11 +6,12 @@
  */
 
 import type { Simulation } from '../sim/simulation.ts';
+import type { CirculationState, SimParams } from '../sim/types.ts';
 
 export const SAVE_KEY = 'river.sandbox.save.v1';
 
 export interface SaveData {
-  version: 1;
+  version: 1 | 2;
   width: number;
   height: number;
   cellSize: number;
@@ -20,6 +21,16 @@ export interface SaveData {
   bed: string;
   water: string;
   sediment: string;
+  bedload?: string;
+  bedrock?: string;
+  erodibility?: string;
+  secondaryFlow?: string;
+  lowVelocityAge?: string;
+  circulation?: CirculationState;
+  circulationWaterByColumn?: number[];
+  params?: Partial<SimParams>;
+  presetId?: string;
+  seed?: number;
 }
 
 function encodeFloats(arr: Float32Array): string {
@@ -75,7 +86,7 @@ export function serialize(sim: Simulation): SaveData {
   const g = sim.grid;
   const src = sim.sources[0];
   return {
-    version: 1,
+    version: 2,
     width: g.width,
     height: g.height,
     cellSize: sim.params.cellSize,
@@ -85,6 +96,16 @@ export function serialize(sim: Simulation): SaveData {
     bed: encodeFloats(g.bedHeight),
     water: encodeFloats(g.waterDepth),
     sediment: encodeFloats(g.suspendedSediment),
+    bedload: encodeFloats(g.bedloadSediment),
+    bedrock: encodeFloats(g.bedrockHeight),
+    erodibility: encodeFloats(g.erodibility),
+    secondaryFlow: encodeFloats(g.secondaryFlow),
+    lowVelocityAge: encodeFloats(g.lowVelocityAge),
+    circulation: { ...sim.circulation },
+    circulationWaterByColumn: Array.from(sim.circulationWaterByColumn),
+    params: { ...sim.params, openBoundary: { ...sim.params.openBoundary } },
+    presetId: sim.presetId,
+    seed: sim.randomSeed,
   };
 }
 
@@ -96,24 +117,62 @@ export function deserialize(sim: Simulation, data: SaveData): void {
   resample(bed, data.width, data.height, g.bedHeight, g.width, g.height);
   resample(water, data.width, data.height, g.waterDepth, g.width, g.height);
   resample(sediment, data.width, data.height, g.suspendedSediment, g.width, g.height);
+  if (data.bedload) resample(decodeFloats(data.bedload), data.width, data.height, g.bedloadSediment, g.width, g.height);
+  else g.bedloadSediment.fill(0);
+  if (data.bedrock) resample(decodeFloats(data.bedrock), data.width, data.height, g.bedrockHeight, g.width, g.height);
+  if (data.erodibility) resample(decodeFloats(data.erodibility), data.width, data.height, g.erodibility, g.width, g.height);
+  if (data.secondaryFlow) resample(decodeFloats(data.secondaryFlow), data.width, data.height, g.secondaryFlow, g.width, g.height);
+  else g.secondaryFlow.fill(0);
+  if (data.lowVelocityAge) resample(decodeFloats(data.lowVelocityAge), data.width, data.height, g.lowVelocityAge, g.width, g.height);
+  else g.lowVelocityAge.fill(0);
   g.velocityX.fill(0);
   g.velocityY.fill(0);
-  g.fluxL.fill(0);
-  g.fluxR.fill(0);
-  g.fluxT.fill(0);
-  g.fluxB.fill(0);
+  for (const flux of g.fluxes) flux.fill(0);
+  g.curvature.fill(0);
+  g.bankSide.fill(0);
+  g.oxbowCandidate.fill(0);
   for (let i = 0; i < g.size; i++) {
     if (!Number.isFinite(g.bedHeight[i])) g.bedHeight[i] = 0;
     if (!(g.waterDepth[i] >= 0)) g.waterDepth[i] = 0;
     if (!(g.suspendedSediment[i] >= 0)) g.suspendedSediment[i] = 0;
+    if (!(g.bedloadSediment[i] >= 0)) g.bedloadSediment[i] = 0;
     if (g.bedHeight[i] < g.bedrockHeight[i]) g.bedHeight[i] = g.bedrockHeight[i];
   }
   sim.inflowScale = Math.max(0, Math.min(1, data.inflow));
+  if (data.params) {
+    sim.params = { ...sim.params, ...data.params };
+    if (data.params.openBoundary) sim.params.openBoundary = { ...data.params.openBoundary };
+  }
+  if (data.circulation) {
+    Object.assign(sim.circulation, data.circulation);
+  } else {
+    sim.seedCirculation(0);
+  }
+  if (data.circulationWaterByColumn?.length) {
+    let sum = 0;
+    for (let x = 0; x < g.width; x++) {
+      const u = ((x + 0.5) / g.width) * data.circulationWaterByColumn.length - 0.5;
+      const x0 = Math.max(0, Math.min(data.circulationWaterByColumn.length - 1, Math.floor(u)));
+      const x1 = Math.min(data.circulationWaterByColumn.length - 1, x0 + 1);
+      const f = Math.max(0, Math.min(1, u - x0));
+      const value = data.circulationWaterByColumn[x0] * (1 - f) + data.circulationWaterByColumn[x1] * f;
+      sim.circulationWaterByColumn[x] = Math.max(0, value);
+      sum += sim.circulationWaterByColumn[x];
+    }
+    if (sum > 0) {
+      const scale = sim.circulation.water / sum;
+      for (let x = 0; x < g.width; x++) sim.circulationWaterByColumn[x] *= scale;
+    }
+  }
+  sim.presetId = data.presetId ?? 'legacy-sandbox';
+  sim.randomSeed = data.seed ?? 0;
   if (data.source && sim.sources[0]) {
     const sx = (data.source.x / data.width) * g.width;
     const sy = (data.source.y / data.height) * g.height;
     sim.sources[0].x = Math.max(0, Math.min(g.width - 1, sx));
     sim.sources[0].y = Math.max(0, Math.min(g.height - 1, sy));
+    sim.sources[0].radius = Math.max(0.5, (data.source.radius / data.width) * g.width);
+    sim.sources[0].maxRate = Math.max(0, data.source.maxRate);
   }
   sim.resetBudget();
 }
@@ -132,7 +191,7 @@ export function loadFromStorage(sim: Simulation): boolean {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return false;
     const data = JSON.parse(raw) as SaveData;
-    if (data.version !== 1) return false;
+    if (data.version !== 1 && data.version !== 2) return false;
     deserialize(sim, data);
     return true;
   } catch {

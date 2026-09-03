@@ -18,7 +18,12 @@ export type DebugLayer =
   | 'velocity'
   | 'sediment'
   | 'erosion'
-  | 'deposition';
+  | 'deposition'
+  | 'curvature'
+  | 'secondary'
+  | 'bank'
+  | 'bedload'
+  | 'oxbow';
 
 export interface PaintOptions {
   /** 濡れ始めとみなす水深 [m] */
@@ -45,6 +50,11 @@ export interface CellSample {
   speed: number;
   erosion: number;
   deposition: number;
+  curvature: number;
+  secondary: number;
+  bank: number;
+  bedload: number;
+  oxbow: number;
   /** 陰影 (平坦で 0.707) */
   shade: number;
 }
@@ -91,6 +101,21 @@ export function paintSample(s: CellSample, opt: PaintOptions, out: Uint8ClampedA
         break;
       case 'deposition':
         t = s.deposition / 0.02;
+        break;
+      case 'curvature':
+        t = 0.5 + s.curvature / 1.6;
+        break;
+      case 'secondary':
+        t = 0.5 + s.secondary / 1.2;
+        break;
+      case 'bank':
+        t = s.bank > 0 ? 1 : s.bank < 0 ? 0 : 0.5;
+        break;
+      case 'bedload':
+        t = s.bedload / 0.03;
+        break;
+      case 'oxbow':
+        t = s.oxbow;
         break;
     }
     heatColor(t, out, off);
@@ -170,6 +195,13 @@ export function paintSample(s: CellSample, opt: PaintOptions, out: Uint8ClampedA
       wb += (250 - wb) * t;
     }
 
+    // 物理的に本流から切り離された低流速水域は静かな青緑に見せる。
+    if (s.oxbow > 0.5) {
+      wr += (48 - wr) * 0.45;
+      wg += (132 - wg) * 0.45;
+      wb += (146 - wb) * 0.45;
+    }
+
     // 浅いほど地面が透ける
     const alpha = 0.32 + 0.68 * Math.min(1, depth / (opt.deepDepth * 0.6));
     r += (wr - r) * alpha;
@@ -190,6 +222,11 @@ const sample: CellSample = {
   speed: 0,
   erosion: 0,
   deposition: 0,
+  curvature: 0,
+  secondary: 0,
+  bank: 0,
+  bedload: 0,
+  oxbow: 0,
   shade: 0.707,
 };
 
@@ -210,6 +247,11 @@ export function cellColor(
   sample.speed = Math.sqrt(vx * vx + vy * vy);
   sample.erosion = grid.erosionRecent[i];
   sample.deposition = grid.depositionRecent[i];
+  sample.curvature = grid.curvature[i];
+  sample.secondary = grid.secondaryFlow[i];
+  sample.bank = grid.bankSide[i];
+  sample.bedload = grid.bedloadSediment[i];
+  sample.oxbow = grid.oxbowCandidate[i];
   sample.shade = shade;
   paintSample(sample, opt, out, off);
 }

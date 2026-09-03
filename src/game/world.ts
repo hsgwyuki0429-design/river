@@ -50,10 +50,53 @@ export const SANDBOX_STAGE: StageDef = {
   failure: [],
 };
 
+/** 小さな非対称だけを与え、蛇行・切断を物理相互作用から観察する循環プリセット。 */
+export const MEANDER_SANDBOX_STAGE: StageDef = {
+  id: 'meander-sandbox',
+  name: '蛇行観察',
+  subtitle: '有限の水と砂が上下循環する長い氾濫原',
+  hint: '循環流量を上げると、外岸侵食と内岸堆積が小さな曲がりを成長させます。',
+  terrain: [
+    { type: 'slope', high: 3.2, low: 2.2, dir: 'down' },
+    { type: 'noise', amplitude: 0.035, scale: 7, seed: 76123, octaves: 3 },
+    {
+      type: 'channel',
+      points: [[0.5, 0], [0.508, 0.24], [0.492, 0.5], [0.506, 0.76], [0.5, 1]],
+      width: 0.047,
+      depth: 0.16,
+    },
+    { type: 'erodibility', x: 0, y: 0, w: 1, h: 1, value: 1 },
+  ],
+  sources: [{ id: 'pump', x: 0.5, y: 0.01, radius: 0.055, maxRate: 2.4 }],
+  zones: [],
+  openBoundary: { left: false, right: false, top: false, bottom: false },
+  sandBudget: null,
+  targetTime: 0,
+  timeLimit: null,
+  initialInflow: 0.55,
+  minInflow: 0,
+  success: [],
+  failure: [],
+  presetId: 'meander-v1',
+  seed: 76123,
+  gridHeightMultiplier: 2,
+  circulationInitialWater: 72,
+  params: {
+    meanderDynamics: true,
+    circulationEnabled: true,
+    morphologicalTimeScale: 10,
+    criticalShear: 8,
+    erosionRate: 2.8e-5,
+    bankErosionRate: 1.2e-5,
+    pointBarDepositionGain: 0.72,
+  },
+};
+
 export function createWorld(stage: StageDef, opts: WorldOptions): World {
   const sim = new Simulation(opts.width, opts.height, {
     cellSize: opts.cellSize,
     pipeLength: opts.cellSize,
+    diagonalFlowEnabled: stage.id === 'sandbox' || stage.id === 'meander-sandbox',
     openBoundary: { ...stage.openBoundary },
     ...opts.params,
     ...stage.params,
@@ -69,6 +112,11 @@ export function createWorld(stage: StageDef, opts: WorldOptions): World {
     maxRate: s.maxRate,
   }));
   sim.inflowScale = stage.initialInflow;
+  sim.presetId = stage.presetId ?? stage.id;
+  sim.randomSeed = stage.seed ?? 0;
+  if (stage.circulationInitialWater !== undefined) {
+    sim.seedCirculation(stage.circulationInitialWater);
+  }
   sim.resetBudget();
 
   const tracker = stage.success.length > 0 ? new ObjectiveTracker(stage, sim) : null;
@@ -85,6 +133,7 @@ export function resetWorld(world: World, stage: StageDef): void {
   sim.grid.depositedSediment.fill(0);
   sim.grid.drain.fill(0);
   applyTerrainOps(sim.grid, stage.terrain);
+  sim.seedCirculation(stage.circulationInitialWater ?? 0);
   sim.inflowScale = stage.initialInflow;
   sim.resetBudget();
   world.tracker?.reset(sim);

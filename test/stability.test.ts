@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeRng } from '../src/sim/rng.ts';
 import { CELL_SIZE, QUALITY_PRESETS } from '../src/game/session.ts';
-import { createWorld, SANDBOX_STAGE } from '../src/game/world.ts';
+import { createWorld, MEANDER_SANDBOX_STAGE, SANDBOX_STAGE } from '../src/game/world.ts';
 import { STAGES } from '../src/game/stages.ts';
 
 /**
@@ -9,6 +9,36 @@ import { STAGES } from '../src/game/stages.ts';
  * 乱数はシード固定なので、失敗したら同じ条件で再現できる。
  */
 describe('長時間の安定性', () => {
+  it('循環・曲率・掃流砂を有効にした150秒ランダム操作でも保存則を保つ', () => {
+    const world = createWorld(MEANDER_SANDBOX_STAGE, {
+      width: 32,
+      height: 96,
+      cellSize: CELL_SIZE,
+      params: { maxSubsteps: 2 },
+    });
+    const sim = world.sim;
+    const g = sim.grid;
+    const rng = makeRng(76123);
+    const initialWater = sim.stats.waterVolume + sim.circulation.water;
+    for (let step = 0; step < 150 * 60; step++) {
+      if (step % 30 === 0) sim.inflowScale = rng() < 0.15 ? 0 : rng();
+      if (step % 12 === 0) {
+        sim.modifyTerrain(rng() * g.width, rng() * g.height, 1.5 + rng() * 2, (rng() - 0.5) * 0.25);
+      }
+      sim.step(1 / 60);
+    }
+    for (let i = 0; i < g.size; i++) {
+      expect(Number.isFinite(g.curvature[i])).toBe(true);
+      expect(Number.isFinite(g.secondaryFlow[i])).toBe(true);
+      expect(g.bedloadSediment[i]).toBeGreaterThanOrEqual(0);
+      expect(g.bedHeight[i]).toBeGreaterThanOrEqual(g.bedrockHeight[i] - 1e-4);
+    }
+    const finalWater = sim.stats.waterVolume + sim.circulation.water;
+    expect(Math.abs(finalWater - initialWater) / Math.max(1, initialWater)).toBeLessThan(1e-4);
+    expect(sim.budget.numericFaults).toBe(0);
+    expect(sim.budgetWithinTolerance(1e-4)).toBe(true);
+  }, 300000);
+
   it('ランダムな地形編集と水量変更を続けても破綻しない', () => {
     const q = QUALITY_PRESETS[2];
     const world = createWorld(SANDBOX_STAGE, {

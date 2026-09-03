@@ -31,9 +31,18 @@ const ui = new GameUI(session, {
     ui.syncAll();
     ui.close();
   },
+  onStartMeanderSandbox: () => {
+    session.startMeanderSandbox();
+    input.resetCamera();
+    ui.syncAll();
+    ui.close();
+    ui.toast('有限の水を循環させています');
+  },
   onReset: () => {
     // 解像度が変わっている場合は作り直す
-    if (session.mode === 'sandbox') session.startSandbox();
+    if (session.mode === 'sandbox' && session.activeStage.id === 'meander-sandbox') {
+      session.startMeanderSandbox();
+    } else if (session.mode === 'sandbox') session.startSandbox();
     else if (session.stage) session.startStage(session.stage.id);
     else session.reset();
     ui.syncAll();
