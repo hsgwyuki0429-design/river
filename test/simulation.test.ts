@@ -433,3 +433,81 @@ describe('11. フレームレート非依存', () => {
     expect(rel).toBeLessThan(0.1);
   });
 });
+
+describe('12. 双方向の相互作用', () => {
+  it('侵食・堆積で変化した地形が、その後の水の流れを変える', () => {
+    function build(morph: number) {
+      const sim = new Simulation(24, 60, {
+        morphologicalTimeScale: morph,
+        openBoundary: { left: false, right: false, top: false, bottom: true },
+      });
+      const g = sim.grid;
+      // ゆるい斜面＋わずかな凹凸（どちらへ流れるかが微妙な地形）
+      for (let y = 0; y < g.height; y++) {
+        for (let x = 0; x < g.width; x++) {
+          g.bedHeight[g.index(x, y)] =
+            5 - (y / (g.height - 1)) * 4.5 + Math.sin(x * 0.55) * 0.12;
+        }
+      }
+      sim.sources = [{ id: 's', x: 12, y: 2, radius: 2, maxRate: 1.4 }];
+      sim.inflowScale = 1;
+      sim.resetBudget();
+      run(sim, 45);
+      assertSane(sim);
+      return sim;
+    }
+
+    const rigid = build(0); // 地形が変化しない場合
+    const eroding = build(8); // 侵食・堆積が起きる場合
+
+    // 地形が実際に変化している
+    let bedDiff = 0;
+    for (let i = 0; i < rigid.grid.size; i++) {
+      bedDiff += Math.abs(eroding.grid.bedHeight[i] - rigid.grid.bedHeight[i]);
+    }
+    expect(bedDiff).toBeGreaterThan(1);
+
+    // その結果、水の分布も変わっている（地形→水 のフィードバックが効いている）
+    let waterDiff = 0;
+    let waterTotal = 0;
+    for (let i = 0; i < rigid.grid.size; i++) {
+      waterDiff += Math.abs(eroding.grid.waterDepth[i] - rigid.grid.waterDepth[i]);
+      waterTotal += rigid.grid.waterDepth[i];
+    }
+    expect(waterDiff).toBeGreaterThan(waterTotal * 0.05);
+
+    // 侵食で削れた場所と堆積した場所の両方が存在する
+    let eroded = 0;
+    let deposited = 0;
+    for (let i = 0; i < rigid.grid.size; i++) {
+      const d = eroding.grid.bedHeight[i] - rigid.grid.bedHeight[i];
+      if (d < -1e-3) eroded++;
+      else if (d > 1e-3) deposited++;
+    }
+    expect(eroded).toBeGreaterThan(10);
+    expect(deposited).toBeGreaterThan(10);
+  });
+
+  it('水量スライダーは盤面の水位ではなく流入量を変える', () => {
+    const sim = new Simulation(20, 20, { morphologicalTimeScale: 0 });
+    sim.grid.bedHeight.fill(1);
+    sim.sources = [{ id: 's', x: 10, y: 10, radius: 2, maxRate: 2 }];
+    sim.resetBudget();
+
+    sim.inflowScale = 0;
+    run(sim, 2);
+    expect(sim.budget.waterAdded).toBe(0);
+    expect(sim.stats.waterVolume).toBe(0);
+
+    sim.inflowScale = 0.5;
+    run(sim, 2);
+    const added1 = sim.budget.waterAdded;
+    expect(added1).toBeCloseTo(2 * 0.5 * 2, 1);
+
+    sim.inflowScale = 1;
+    run(sim, 2);
+    const added2 = sim.budget.waterAdded - added1;
+    // 流量が2倍なら、同じ時間で加わる水も約2倍
+    expect(added2 / added1).toBeCloseTo(2, 1);
+  });
+});

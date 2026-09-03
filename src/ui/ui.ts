@@ -24,6 +24,7 @@ const DEBUG_LAYERS: { id: DebugLayer; label: string }[] = [
   { id: 'none', label: '通常' },
   { id: 'height', label: '高さ' },
   { id: 'depth', label: '水深' },
+  { id: 'velocity', label: '流速' },
   { id: 'sediment', label: '浮遊土砂' },
   { id: 'erosion', label: '侵食' },
   { id: 'deposition', label: '堆積' },
@@ -440,7 +441,7 @@ export class GameUI {
       </p>
       <div class="row-btns">
         <button class="big-btn primary" data-act="retry">もう一度</button>
-        ${next ? `<button class="big-btn" data-act="next">次のステージへ</button>` : ''}
+        ${cleared && next ? `<button class="big-btn" data-act="next">次のステージへ</button>` : ''}
         <button class="big-btn" data-act="title">タイトルへ</button>
       </div>
     `);
@@ -450,7 +451,7 @@ export class GameUI {
     });
     sheet.querySelector('[data-act="next"]')?.addEventListener('click', () => {
       this.close();
-      this.handlers.onStartStage(next.id);
+      if (next) this.handlers.onStartStage(next.id);
     });
     sheet.querySelector('[data-act="title"]')?.addEventListener('click', () => {
       this.close();

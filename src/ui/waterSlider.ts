@@ -48,7 +48,7 @@ export class WaterSlider {
   private onDown = (e: PointerEvent): void => {
     e.preventDefault();
     this.dragging = true;
-    this.root.setPointerCapture?.(e.pointerId);
+    capturePointer(this.root, e.pointerId);
     this.set(this.valueFromEvent(e), true);
   };
 
@@ -61,7 +61,7 @@ export class WaterSlider {
   private onUp = (e: PointerEvent): void => {
     if (!this.dragging) return;
     this.dragging = false;
-    this.root.releasePointerCapture?.(e.pointerId);
+    releasePointer(this.root, e.pointerId);
   };
 
   private onKey = (e: KeyboardEvent): void => {
@@ -109,4 +109,21 @@ export function describeInflow(v: number): string {
   if (v < 0.55) return '通常の河川';
   if (v < 0.8) return '増水';
   return '洪水級';
+}
+
+/** ポインタ捕捉。既に解放済みなどで失敗しても致命的ではないので握りつぶす */
+function capturePointer(el: Element, id: number): void {
+  try {
+    el.setPointerCapture?.(id);
+  } catch {
+    /* ignore */
+  }
+}
+
+function releasePointer(el: Element, id: number): void {
+  try {
+    el.releasePointerCapture?.(id);
+  } catch {
+    /* ignore */
+  }
 }

@@ -90,7 +90,7 @@ export class BoardInput {
 
   private onDown = (e: PointerEvent): void => {
     e.preventDefault();
-    this.canvas.setPointerCapture?.(e.pointerId);
+    capturePointer(this.canvas, e.pointerId);
     const p = this.local(e);
     this.pointers.set(e.pointerId, p);
 
@@ -164,7 +164,7 @@ export class BoardInput {
   private onUp = (e: PointerEvent): void => {
     if (!this.pointers.has(e.pointerId)) return;
     this.pointers.delete(e.pointerId);
-    this.canvas.releasePointerCapture?.(e.pointerId);
+    releasePointer(this.canvas, e.pointerId);
 
     if (this.armed && this.pointers.size === 0) {
       // 短いタップ: 1回だけ編集する
@@ -302,4 +302,21 @@ export class BoardInput {
 
 function preventDefault(e: Event): void {
   e.preventDefault();
+}
+
+/** ポインタ捕捉。既に解放済みなどで失敗しても致命的ではないので握りつぶす */
+function capturePointer(el: Element, id: number): void {
+  try {
+    el.setPointerCapture?.(id);
+  } catch {
+    /* ignore */
+  }
+}
+
+function releasePointer(el: Element, id: number): void {
+  try {
+    el.releasePointerCapture?.(id);
+  } catch {
+    /* ignore */
+  }
 }

@@ -282,12 +282,12 @@ export class ObjectiveTracker {
     }
   }
 
-  /** 条件が sustain 秒だけ継続したか */
+  /** 条件が sustain 秒だけ継続したか（sustain が 0 でも、満たしていなければ false） */
   private hold(key: string, met: boolean, dt: number, sustain: number): boolean {
     const prev = this.sustained.get(key) ?? 0;
     const next = met ? prev + dt : 0;
     this.sustained.set(key, next);
-    return next >= sustain;
+    return met && next >= sustain;
   }
 
   /** 濡れたセルをたどって2つの区域がつながっているか調べる */
