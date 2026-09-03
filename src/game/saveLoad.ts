@@ -11,7 +11,7 @@ import type { CirculationState, SimParams } from '../sim/types.ts';
 export const SAVE_KEY = 'river.sandbox.save.v1';
 
 export interface SaveData {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   width: number;
   height: number;
   cellSize: number;
@@ -28,6 +28,8 @@ export interface SaveData {
   lowVelocityAge?: string;
   circulation?: CirculationState;
   circulationWaterByColumn?: number[];
+  circulationSuspendedSedimentByColumn?: number[];
+  circulationBedloadSedimentByColumn?: number[];
   params?: Partial<SimParams>;
   presetId?: string;
   seed?: number;
@@ -82,11 +84,30 @@ function resample(
   }
 }
 
+/** 幅の異なる保存データをX列状態へ線形補間し、指定した総量へ正規化する。 */
+function restoreColumns(src: number[], dst: Float64Array, total: number): void {
+  let sum = 0;
+  for (let x = 0; x < dst.length; x++) {
+    const u = ((x + 0.5) / dst.length) * src.length - 0.5;
+    const x0 = Math.max(0, Math.min(src.length - 1, Math.floor(u)));
+    const x1 = Math.min(src.length - 1, x0 + 1);
+    const f = Math.max(0, Math.min(1, u - x0));
+    dst[x] = Math.max(0, src[x0] * (1 - f) + src[x1] * f);
+    sum += dst[x];
+  }
+  if (sum > 0) {
+    const scale = total / sum;
+    for (let x = 0; x < dst.length; x++) dst[x] *= scale;
+  } else {
+    dst.fill(total / dst.length);
+  }
+}
+
 export function serialize(sim: Simulation): SaveData {
   const g = sim.grid;
   const src = sim.sources[0];
   return {
-    version: 2,
+    version: 3,
     width: g.width,
     height: g.height,
     cellSize: sim.params.cellSize,
@@ -103,6 +124,8 @@ export function serialize(sim: Simulation): SaveData {
     lowVelocityAge: encodeFloats(g.lowVelocityAge),
     circulation: { ...sim.circulation },
     circulationWaterByColumn: Array.from(sim.circulationWaterByColumn),
+    circulationSuspendedSedimentByColumn: Array.from(sim.circulationSuspendedSedimentByColumn),
+    circulationBedloadSedimentByColumn: Array.from(sim.circulationBedloadSedimentByColumn),
     params: { ...sim.params, openBoundary: { ...sim.params.openBoundary } },
     presetId: sim.presetId,
     seed: sim.randomSeed,
@@ -149,19 +172,34 @@ export function deserialize(sim: Simulation, data: SaveData): void {
     sim.seedCirculation(0);
   }
   if (data.circulationWaterByColumn?.length) {
-    let sum = 0;
+    restoreColumns(data.circulationWaterByColumn, sim.circulationWaterByColumn, sim.circulation.water);
+  } else sim.circulationWaterByColumn.fill(sim.circulation.water / g.width);
+  if (data.circulationSuspendedSedimentByColumn?.length) {
+    restoreColumns(
+      data.circulationSuspendedSedimentByColumn,
+      sim.circulationSuspendedSedimentByColumn,
+      sim.circulation.suspendedSediment,
+    );
+  } else {
+    const ratio = sim.circulation.water > 0
+      ? sim.circulation.suspendedSediment / sim.circulation.water
+      : 0;
     for (let x = 0; x < g.width; x++) {
-      const u = ((x + 0.5) / g.width) * data.circulationWaterByColumn.length - 0.5;
-      const x0 = Math.max(0, Math.min(data.circulationWaterByColumn.length - 1, Math.floor(u)));
-      const x1 = Math.min(data.circulationWaterByColumn.length - 1, x0 + 1);
-      const f = Math.max(0, Math.min(1, u - x0));
-      const value = data.circulationWaterByColumn[x0] * (1 - f) + data.circulationWaterByColumn[x1] * f;
-      sim.circulationWaterByColumn[x] = Math.max(0, value);
-      sum += sim.circulationWaterByColumn[x];
+      sim.circulationSuspendedSedimentByColumn[x] = sim.circulationWaterByColumn[x] * ratio;
     }
-    if (sum > 0) {
-      const scale = sim.circulation.water / sum;
-      for (let x = 0; x < g.width; x++) sim.circulationWaterByColumn[x] *= scale;
+  }
+  if (data.circulationBedloadSedimentByColumn?.length) {
+    restoreColumns(
+      data.circulationBedloadSedimentByColumn,
+      sim.circulationBedloadSedimentByColumn,
+      sim.circulation.bedloadSediment,
+    );
+  } else {
+    const ratio = sim.circulation.water > 0
+      ? sim.circulation.bedloadSediment / sim.circulation.water
+      : 0;
+    for (let x = 0; x < g.width; x++) {
+      sim.circulationBedloadSedimentByColumn[x] = sim.circulationWaterByColumn[x] * ratio;
     }
   }
   sim.presetId = data.presetId ?? 'legacy-sandbox';

@@ -56,8 +56,10 @@ export class Simulation {
     releasedWater: 0,
     releasedSediment: 0,
   };
-  /** 下端流出の横方向分布を保ったまま上端へ戻す水量 [m^3]。 */
+  /** X列ごとの盤外循環レーン。下端を出た物質は同じ列の上端へ戻る。 */
   readonly circulationWaterByColumn: Float64Array;
+  readonly circulationSuspendedSedimentByColumn: Float64Array;
+  readonly circulationBedloadSedimentByColumn: Float64Array;
   /** 地形プリセット名と再現シード（保存用）。 */
   presetId = 'custom';
   randomSeed = 0;
@@ -87,6 +89,8 @@ export class Simulation {
     if (params.openBoundary) this.params.openBoundary = { ...params.openBoundary };
     this.budget = createBudget();
     this.circulationWaterByColumn = new Float64Array(width);
+    this.circulationSuspendedSedimentByColumn = new Float64Array(width);
+    this.circulationBedloadSedimentByColumn = new Float64Array(width);
   }
 
   get cellArea(): number {
@@ -140,6 +144,17 @@ export class Simulation {
       for (let x = 0; x < this.grid.width; x++) {
         this.circulationWaterByColumn[x] *= this.circulation.water / sum;
       }
+    }
+    const suspendedRatio = this.circulation.water > 0
+      ? this.circulation.suspendedSediment / this.circulation.water
+      : 0;
+    const bedloadRatio = this.circulation.water > 0
+      ? this.circulation.bedloadSediment / this.circulation.water
+      : 0;
+    for (let x = 0; x < this.grid.width; x++) {
+      const waterInLane = this.circulationWaterByColumn[x];
+      this.circulationSuspendedSedimentByColumn[x] = waterInLane * suspendedRatio;
+      this.circulationBedloadSedimentByColumn[x] = waterInLane * bedloadRatio;
     }
   }
 
@@ -247,8 +262,8 @@ export class Simulation {
   }
 
   /**
-   * タンクの水を上端へ戻す。水と各土砂相は同じ released/tank 比で放出するため、
-   * 水だけ・砂だけが先行しない。下端で記録した横分布は近傍平均で滑らかにして使う。
+   * タンクの水を上端へ戻す。各X列を独立した循環レーンとして扱い、下端を出た
+   * 水・浮遊砂・掃流砂を同じX列へ、すべて同じ released/tank 比で放出する。
    */
   private releaseCirculation(h: number): void {
     const tank = this.circulation;
@@ -258,44 +273,27 @@ export class Simulation {
     const releasedWater = Math.min(before, Math.max(0, requested));
     if (releasedWater <= 0) return;
     const fraction = releasedWater / before;
-    const releasedSuspended = tank.suspendedSediment * fraction;
-    const releasedBedload = tank.bedloadSediment * fraction;
+    let releasedSuspended = 0;
+    let releasedBedload = 0;
     const g = this.grid;
     const area = this.cellArea;
     const byCol = this.circulationWaterByColumn;
-    let columnTotal = 0;
-    for (let x = 0; x < g.width; x++) columnTotal += byCol[x];
-    const useRecorded = columnTotal > 1e-12;
-    const mean = useRecorded ? columnTotal / g.width : 1 / g.width;
-    const spread = Math.max(0, Math.min(1, this.params.circulationSpread));
-    let weightTotal = 0;
-    const weights = g.scratchDelta;
-    for (let x = 0; x < g.width; x++) {
-      const l = useRecorded ? byCol[x > 0 ? x - 1 : x] : mean;
-      const c = useRecorded ? byCol[x] : mean;
-      const r = useRecorded ? byCol[x + 1 < g.width ? x + 1 : x] : mean;
-      const smooth = (l + 2 * c + r) * 0.25;
-      const w = (1 - spread) * c + spread * smooth + mean * 0.02;
-      weights[x] = w;
-      weightTotal += w;
-    }
-    if (weightTotal <= 0) weightTotal = g.width;
+    const suspendedByCol = this.circulationSuspendedSedimentByColumn;
+    const bedloadByCol = this.circulationBedloadSedimentByColumn;
 
     for (let x = 0; x < g.width; x++) {
-      const share = (weightTotal > 0 ? weights[x] / weightTotal : 1 / g.width);
-      const water = releasedWater * share;
-      const susp = releasedSuspended * share;
-      const bedload = releasedBedload * share;
-      // 2列に分け、上端一列への集中と格子ノイズを抑える。
-      const i0 = x;
-      const i1 = g.height > 1 ? g.width + x : i0;
-      g.waterDepth[i0] += (water * 0.72) / area;
-      g.suspendedSediment[i0] += (susp * 0.72) / area;
-      g.bedloadSediment[i0] += (bedload * 0.72) / area;
-      g.waterDepth[i1] += (water * 0.28) / area;
-      g.suspendedSediment[i1] += (susp * 0.28) / area;
-      g.bedloadSediment[i1] += (bedload * 0.28) / area;
-      if (useRecorded) byCol[x] = Math.max(0, byCol[x] * (1 - fraction));
+      const water = byCol[x] * fraction;
+      const susp = suspendedByCol[x] * fraction;
+      const bedload = bedloadByCol[x] * fraction;
+      const top = x;
+      g.waterDepth[top] += water / area;
+      g.suspendedSediment[top] += susp / area;
+      g.bedloadSediment[top] += bedload / area;
+      byCol[x] -= water;
+      suspendedByCol[x] -= susp;
+      bedloadByCol[x] -= bedload;
+      releasedSuspended += susp;
+      releasedBedload += bedload;
     }
     tank.water -= releasedWater;
     tank.suspendedSediment -= releasedSuspended;
@@ -456,6 +454,7 @@ export class Simulation {
               circulatedWater += vOut;
               circulatedSediment += sedVolume;
               this.circulationWaterByColumn[x] += vOut;
+              this.circulationSuspendedSedimentByColumn[x] += sedVolume;
             } else {
               waterOut += vOut;
               sedimentOut += sedVolume;
@@ -935,6 +934,7 @@ export class Simulation {
           delta[ny * width + nx] += move;
         } else if (p.circulationEnabled && ny >= height) {
           circulationOut += move * area;
+          this.circulationBedloadSedimentByColumn[x] += move * area;
         } else {
           const open =
             (nx < 0 && p.openBoundary.left) ||

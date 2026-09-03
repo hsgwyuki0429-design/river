@@ -49,7 +49,7 @@ export interface SimParams {
   // --- 上下循環境界 ---
   /** 下端流出を外部タンクへ回収し、上端へポンプで戻す */
   circulationEnabled: boolean;
-  /** 循環水を上端へ分散する横方向平滑化の強さ 0..1 */
+  /** @deprecated v3ではX列を維持するため未使用。旧保存データとの互換用。 */
   circulationSpread: number;
 
   // --- 侵食・運搬・堆積 ---
@@ -146,7 +146,7 @@ export const DEFAULT_PARAMS: SimParams = {
   evaporation: 0,
 
   circulationEnabled: false,
-  circulationSpread: 0.7,
+  circulationSpread: 0,
 
   density: 1000,
   criticalShear: 12,

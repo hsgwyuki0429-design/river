@@ -15,6 +15,42 @@ function totalSediment(sim: Simulation): number {
 }
 
 describe('有限タンクによる上下循環', () => {
+  it('下端を出た水と土砂が左右へ混ざらず同じX列の上端へ戻る', () => {
+    const sim = new Simulation(9, 12, {
+      circulationEnabled: true,
+      fluxGain: 0,
+      morphologicalTimeScale: 0,
+    });
+    const g = sim.grid;
+    sim.sources = [{ id: 'pump', x: 4, y: 0, radius: 1, maxRate: 0.5 }];
+    sim.seedCirculation(0);
+
+    const exitX = 6;
+    sim.circulation.water = 1;
+    sim.circulation.suspendedSediment = 0.2;
+    sim.circulation.bedloadSediment = 0.1;
+    sim.circulationWaterByColumn[exitX] = 1;
+    sim.circulationSuspendedSedimentByColumn[exitX] = 0.2;
+    sim.circulationBedloadSedimentByColumn[exitX] = 0.1;
+    sim.inflowScale = 1;
+    sim.resetBudget();
+    sim.step(1);
+
+    expect(g.waterDepth[g.index(exitX, 0)]).toBeCloseTo(0.5, 6);
+    expect(g.suspendedSediment[g.index(exitX, 0)]).toBeCloseTo(0.1, 6);
+    expect(g.bedloadSediment[g.index(exitX, 0)]).toBeCloseTo(0.05, 6);
+    for (let x = 0; x < g.width; x++) {
+      if (x === exitX) continue;
+      expect(g.waterDepth[g.index(x, 0)]).toBe(0);
+      expect(g.suspendedSediment[g.index(x, 0)]).toBe(0);
+      expect(g.bedloadSediment[g.index(x, 0)]).toBe(0);
+    }
+    expect(sim.circulationWaterByColumn[exitX]).toBeCloseTo(0.5, 6);
+    expect(sim.circulationSuspendedSedimentByColumn[exitX]).toBeCloseTo(0.1, 6);
+    expect(sim.circulationBedloadSedimentByColumn[exitX]).toBeCloseTo(0.05, 6);
+    expect(sim.budgetWithinTolerance(1e-6)).toBe(true);
+  });
+
   it('水と浮遊砂・掃流砂を必ず同じ割合で放出し、保有量を超えない', () => {
     const sim = new Simulation(12, 20, {
       circulationEnabled: true,
