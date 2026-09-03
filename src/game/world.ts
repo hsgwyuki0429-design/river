@@ -24,30 +24,44 @@ export interface World {
 }
 
 /** 自由モードの初期地形 */
+/**
+ * 自由モードの初期地形。
+ *
+ * 盤面は上下に循環している（下端を出た水と砂が同じX列の上端へ戻る）ので、
+ * 左右の岸を高くしたゆるい谷にして流れが1本にまとまるようにしてある。
+ * 谷が広すぎると水が幅いっぱいに散り、上端へ戻るときも簾状に広がってしまう。
+ */
 export const SANDBOX_TERRAIN: TerrainOp[] = [
-  { type: 'slope', high: 5.0, low: 1.2, dir: 'down' },
-  { type: 'noise', amplitude: 0.22, scale: 3.5, seed: 8801 },
-  { type: 'hill', x: 0.22, y: 0.3, radius: 0.18, height: 1.1 },
-  { type: 'hill', x: 0.78, y: 0.42, radius: 0.2, height: 1.3 },
-  { type: 'carve', x: 0.2, y: 0.74, w: 0.6, h: 0.2, height: 1.35, blend: 0.05 },
+  { type: 'slope', high: 5.2, low: 1.0, dir: 'down' },
+  { type: 'noise', amplitude: 0.16, scale: 3.5, seed: 8801 },
+  // 左右の岸。盤面の外まで伸ばして上下端に継ぎ目が出ないようにする
+  { type: 'plateau', x: -0.15, y: -0.2, w: 0.4, h: 1.4, height: 1.9, blend: 0.16 },
+  { type: 'plateau', x: 0.75, y: -0.2, w: 0.4, h: 1.4, height: 1.9, blend: 0.16 },
+  // 谷の中の起伏。流れが素直に一直線にならないようにする
+  { type: 'hill', x: 0.4, y: 0.32, radius: 0.13, height: 0.6 },
+  { type: 'hill', x: 0.6, y: 0.62, radius: 0.13, height: 0.6 },
 ];
 
 export const SANDBOX_STAGE: StageDef = {
   id: 'sandbox',
   name: '自由モード',
-  subtitle: '制限なしの箱庭',
-  hint: '砂を盛る・削る、水量を変える。地形が水を変え、水が地形を変える。',
+  subtitle: '有限の水と砂が上下に循環する箱庭',
+  hint: '盤面は上下につながっている。下端から出た水と砂は、同じ位置の上端へ戻ってくる。',
   terrain: SANDBOX_TERRAIN,
-  sources: [{ id: 'spring', x: 0.5, y: 0.05, radius: 0.04, maxRate: 1.6 }],
+  sources: [{ id: 'pump', x: 0.5, y: 0.04, radius: 0.045, maxRate: 2.2 }],
   zones: [],
-  openBoundary: { left: false, right: false, top: false, bottom: true },
+  // 下端は circulationEnabled が開けるので、ここでは閉じておく
+  openBoundary: { left: false, right: false, top: false, bottom: false },
   sandBudget: null,
   targetTime: 0,
   timeLimit: null,
-  initialInflow: 0.35,
+  initialInflow: 0.5,
   minInflow: 0,
   success: [],
   failure: [],
+  // 有限の水が盤面を上下に循環し続ける（下端を出た水は同じX列の上端へ戻る）
+  circulationInitialWater: 90,
+  params: { circulationEnabled: true },
 };
 
 /** 小さな非対称だけを与え、蛇行・切断を物理相互作用から観察する循環プリセット。 */
