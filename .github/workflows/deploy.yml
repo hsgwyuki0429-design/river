@@ -4,8 +4,10 @@
 # そのまま配信してもブラウザは TypeScript を実行できない。
 # 必ずこのワークフローでビルドした dist/ を配信すること。
 #
-# 初回のみ、リポジトリの Settings → Pages → Build and deployment → Source を
-# 「GitHub Actions」に変更する必要がある。
+# configure-pages の enablement で配信元の切り替えを試みるが、権限などで切り替わらない
+# 場合は、リポジトリの Settings → Pages → Build and deployment → Source を
+# 手動で「GitHub Actions」に変更する必要がある。
+# （「Deploy from a branch」のままだと、ビルド前の index.html がそのまま配信される）
 name: Deploy to GitHub Pages
 
 on:
@@ -39,7 +41,12 @@ jobs:
       # npm run build は tsc --noEmit も走るので、型エラーがあればここで止まる
       - run: npm run build
 
+      # enablement: true で Pages の配信元を「GitHub Actions」へ切り替える。
+      # 切り替えに失敗しても、後段のデプロイ自体は行えるよう続行する。
       - uses: actions/configure-pages@v5
+        continue-on-error: true
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
