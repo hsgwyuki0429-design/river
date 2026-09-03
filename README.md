@@ -46,6 +46,19 @@ npm run preview    # ビルド結果の確認
 node scripts/smoke.mjs ./tmp
 ```
 
+## 公開（GitHub Pages）
+
+リポジトリ直下の `index.html` は Vite の入力ファイルで、`<script src="/src/main.ts">` を
+指しています。**ブラウザは TypeScript を実行できないので、このファイルをそのまま配信しても
+動きません**（CSS も `main.ts` から読み込むため、素の HTML が表示されるだけになります）。
+
+`.github/workflows/deploy.yml` が main への push でビルドし、`dist/` を Pages へ配信します。
+初回のみ Settings → Pages → Build and deployment → Source を **「GitHub Actions」** に
+変更してください（「Deploy from a branch」のままだとソースがそのまま配信されます）。
+
+公開先: `https://<user>.github.io/river/`
+（`vite.config.ts` の `base: './'` により、サブパス配信でも相対参照で動きます）
+
 ## 構成
 
 ```

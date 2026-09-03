@@ -1,0 +1,56 @@
+# ビルドした dist/ を GitHub Pages へ配信する。
+#
+# リポジトリのルートにある index.html は Vite の入力ファイル（<script src="/src/main.ts">）で、
+# そのまま配信してもブラウザは TypeScript を実行できない。
+# 必ずこのワークフローでビルドした dist/ を配信すること。
+#
+# 初回のみ、リポジトリの Settings → Pages → Build and deployment → Source を
+# 「GitHub Actions」に変更する必要がある。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時実行は1つに絞る（実行中のデプロイは中断しない）
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # npm run build は tsc --noEmit も走るので、型エラーがあればここで止まる
+      - run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
