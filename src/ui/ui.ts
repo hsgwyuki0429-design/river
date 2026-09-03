@@ -3,7 +3,14 @@
  * DOM の組み立てと更新だけを行い、シミュレーションの状態は書き換えない。
  */
 
-import { BRUSH_SIZES, QUALITY_PRESETS, SPEEDS, type Session, type ToolMode } from '../game/session.ts';
+import {
+  BASE_TIME_SCALE,
+  BRUSH_SIZES,
+  QUALITY_PRESETS,
+  SPEEDS,
+  type Session,
+  type ToolMode,
+} from '../game/session.ts';
 import { STAGES } from '../game/stages.ts';
 import { hasSave } from '../game/saveLoad.ts';
 import type { DebugLayer } from '../render/palette.ts';
@@ -239,6 +246,7 @@ export class GameUI {
     this.debugPanel.innerHTML = `
       <div><b>${s.perf.fps.toFixed(0)} fps</b> ・ sim ${s.perf.simMs.toFixed(1)}ms ・ draw ${s.perf.renderMs.toFixed(1)}ms</div>
       <div>格子 ${sim.grid.width}×${sim.grid.height} (${s.perf.quality}) ・ step/frame ${s.perf.stepsPerFrame} ・ sub ${st.substeps} ・ 描画 ${(s.renderScale * 100).toFixed(0)}%</div>
+      <div>指定 ${SPEEDS[s.speedIndex].label} ・ 実効 <b>${effectiveSpeed(s).toFixed(2)}倍</b></div>
       <div>水 <b>${st.waterVolume.toFixed(2)}</b> m³ ・ 追加 ${b.waterAdded.toFixed(1)} ・ 流出 ${b.waterOut.toFixed(1)}</div>
       <div>循環槽 水 ${st.circulationWater.toFixed(2)} m³ ・ 土砂 ${st.circulationSediment.toFixed(3)} m³ ・ 累積循環 ${b.waterCirculated.toFixed(1)} m³</div>
       <div class="${bad(wErr, st.waterVolume + st.circulationWater)}">水収支誤差 ${wErr.toExponential(2)} m³</div>
@@ -400,7 +408,7 @@ export class GameUI {
     });
 
     const morph = sheet.querySelector('#morph-seg') as HTMLElement;
-    for (const v of [0.25, 0.5, 1, 2, 4]) {
+    for (const v of [0.5, 1, 2, 4, 10]) {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = `${v}×`;
@@ -497,6 +505,15 @@ function suspended(sim: { grid: { size: number; suspendedSediment: Float32Array 
   let s = 0;
   for (let i = 0; i < sim.grid.size; i++) s += sim.grid.suspendedSediment[i];
   return s * sim.cellArea;
+}
+
+/**
+ * 実際に出ている倍速。
+ * 端末が指定倍速に追いつけない場合はこの値が下回る（計算は壊れずゆっくり進む）。
+ */
+function effectiveSpeed(s: Session): number {
+  const simSecondsPerRealSecond = s.perf.stepsPerFrame * s.perf.fps * s.sim.params.fixedDt;
+  return simSecondsPerRealSecond / BASE_TIME_SCALE;
 }
 
 function formatTime(seconds: number): string {

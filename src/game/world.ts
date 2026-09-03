@@ -51,7 +51,19 @@ export const SANDBOX_STAGE: StageDef = {
   failure: [],
   // 有限の水が盤面を上下に循環し続ける（下端を出た水は同じX列の上端へ戻る）
   circulationInitialWater: 90,
-  params: { circulationEnabled: true },
+  params: {
+    circulationEnabled: true,
+    // 曲率・二次流・河岸侵食・内岸砂州・掃流砂を有効にして、
+    // 川幅方向（横方向）の侵食と堆積による流路の移り変わりを観察できるようにする
+    meanderDynamics: true,
+    criticalShear: 8,
+    erosionRate: 2.8e-5,
+    // 蛇行観察プリセットより横方向を強めてある。実測で流路中心線の移動量が
+    // 60秒あたり 平均2.6→3.7セル、最大16→27セルになる設定
+    bankErosionRate: 3.0e-5,
+    curvatureErosionGain: 3.5,
+    pointBarDepositionGain: 1.1,
+  },
 };
 
 /** 小さな非対称だけを与え、蛇行・切断を物理相互作用から観察する循環プリセット。 */

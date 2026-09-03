@@ -36,10 +36,14 @@ export const SPEEDS = [
   { label: '1倍', value: 1 },
   { label: '2倍', value: 2 },
   { label: '4倍', value: 4 },
+  { label: '10倍', value: 10 },
 ];
 
 /** 実時間1秒あたりに進めるシミュレーション時間の基準倍率 */
 export const BASE_TIME_SCALE = 2.5;
+
+/** 1フレームでシミュレーションに使う時間の上限 [ms]（残りを描画に回して30fps前後を保つ） */
+export const SIM_BUDGET_MS = 26;
 
 /** 端末性能に応じた格子解像度 */
 export const QUALITY_PRESETS = [
@@ -252,12 +256,17 @@ export class Session {
 
     this.accumulator += Math.min(0.1, dtReal) * speed * BASE_TIME_SCALE;
     const maxSteps = this.maxStepsPerFrame();
+    const budgetMs = SIM_BUDGET_MS;
     let steps = 0;
     const t0 = now();
     while (this.accumulator >= fixed && steps < maxSteps) {
       sim.step(fixed);
       this.accumulator -= fixed;
       steps++;
+      // 1フレームでシミュレーションに使う時間を区切る。
+      // ステップ数ではなく時間で区切ることで、倍速を上げたときに
+      // フレーム落ち→ステップ削減→さらに遅くなる、という逆転が起きない。
+      if (now() - t0 >= budgetMs) break;
     }
     // 追いつけない分は捨てる（無限に溜め込まない）
     if (this.accumulator > fixed * maxSteps) this.accumulator = 0;
@@ -337,9 +346,15 @@ export class Session {
     this.perf.quality = q.label;
   }
 
+  /**
+   * 1フレームで進めるステップ数の上限。
+   * 指定倍速に必要な数（60fps 前提）へ少し余裕を足した値。
+   * 実際にどこまで進むかは SIM_BUDGET_MS の時間予算で決まるので、
+   * 非力な端末では指定倍速に届かず、そのぶんゆっくり進む（計算は壊れない）。
+   */
   private maxStepsPerFrame(): number {
-    // 4倍速でも追いつけるよう余裕を持たせつつ、上限を設けて暴走を防ぐ
-    return this.perf.fps < 40 ? 6 : 10;
+    const wanted = Math.ceil((this.speed * BASE_TIME_SCALE) / (60 * this.sim.params.fixedDt));
+    return Math.max(4, Math.min(40, wanted + 2));
   }
 }
 
