@@ -511,3 +511,78 @@ describe('12. 双方向の相互作用', () => {
     expect(added2 / added1).toBeCloseTo(2, 1);
   });
 });
+
+describe('13. 水源の掘れすぎ', () => {
+  /**
+   * 土砂を含まない水が動く河床へ入ると、その入口は運搬能力に対して土砂ゼロなので
+   * 侵食が常に最大になり、際限なく掘れる。実測では水源セルが初期比 -1.15m まで
+   * 沈んだ（水路の深さは 0.36m）。流入側の河床を固定する境界条件で止める。
+   */
+  function buildInlet(guardReach: number): Simulation {
+    const sim = new Simulation(40, 60, {
+      meanderDynamics: true,
+      morphologicalTimeScale: 20,
+      criticalShear: 8,
+      erosionRate: 2.8e-5,
+      inflowGuardReach: guardReach,
+      openBoundary: { left: false, right: false, top: false, bottom: true },
+    });
+    const g = sim.grid;
+    for (let y = 0; y < g.height; y++) {
+      for (let x = 0; x < g.width; x++) g.bedHeight[g.index(x, y)] = 3.2 - y * 0.016;
+    }
+    sim.sources = [{ id: 'spring', x: 20, y: 1, radius: 2.5, maxRate: 1.6 }];
+    sim.inflowScale = 0.6;
+    sim.resetBudget();
+    return sim;
+  }
+
+  function scourAtSource(sim: Simulation, before: Float32Array): number {
+    const g = sim.grid;
+    const src = sim.sources[0];
+    let worst = 0;
+    for (let y = 0; y <= Math.ceil(src.y + src.radius); y++) {
+      for (let x = 0; x < g.width; x++) {
+        const i = g.index(x, y);
+        const dx = x + 0.5 - src.x;
+        const dy = y + 0.5 - src.y;
+        if (Math.hypot(dx, dy) > src.radius) continue;
+        worst = Math.max(worst, before[i] - g.bedHeight[i]);
+      }
+    }
+    return worst;
+  }
+
+  it('保護なしでは水源の直下が掘れ続け、保護すると止まる', () => {
+    const off = buildInlet(0);
+    const offBefore = Float32Array.from(off.grid.bedHeight);
+    run(off, 90);
+    const offScour = scourAtSource(off, offBefore);
+
+    const on = buildInlet(1.8);
+    const onBefore = Float32Array.from(on.grid.bedHeight);
+    run(on, 90);
+    const onScour = scourAtSource(on, onBefore);
+
+    // 保護なしでは水路の深さ相当より深く掘れる
+    expect(offScour).toBeGreaterThan(0.3);
+    // 保護すると桁違いに小さくなる
+    expect(onScour).toBeLessThan(offScour * 0.2);
+    assertSane(on);
+    expect(on.budgetWithinTolerance(1e-4)).toBe(true);
+  }, 120000);
+
+  it('砂の層を有限にすると、どこも層厚より深くは掘れない', () => {
+    const sim = buildInlet(0);
+    const g = sim.grid;
+    const thickness = 0.4;
+    const before = Float32Array.from(g.bedHeight);
+    for (let i = 0; i < g.size; i++) g.bedrockHeight[i] = g.bedHeight[i] - thickness;
+    sim.resetBudget();
+    run(sim, 120);
+    let worst = 0;
+    for (let i = 0; i < g.size; i++) worst = Math.max(worst, before[i] - g.bedHeight[i]);
+    expect(worst).toBeLessThanOrEqual(thickness + 1e-6);
+    assertSane(sim);
+  }, 120000);
+});

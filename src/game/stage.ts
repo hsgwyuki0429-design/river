@@ -122,6 +122,12 @@ export interface StageDef {
   gridHeight?: number;
   /** 循環タンクへ与える有限な初期水量 [m^3] */
   circulationInitialWater?: number;
+  /**
+   * 岩盤までの砂の層厚 [m]。指定するとこの深さより下は削れなくなる。
+   * 水が出てくる場所のように土砂を含まない水が当たり続ける所は、
+   * 放っておくと際限なく掘れるため、砂の層を有限にして底を作る。
+   */
+  alluviumThickness?: number;
 }
 
 /** 1つの条件の評価結果 */

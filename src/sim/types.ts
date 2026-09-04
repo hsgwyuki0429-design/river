@@ -51,6 +51,15 @@ export interface SimParams {
   circulationEnabled: boolean;
   /** @deprecated v3ではX列を維持するため未使用。旧保存データとの互換用。 */
   circulationSpread: number;
+  /**
+   * 水源のまわりで流れによる侵食を弱める範囲（水源半径の何倍か）。0 で無効。
+   *
+   * 土砂を含まない水が動く河床へ入ると、その入口は必ず掘れる。
+   * 運搬能力に対して土砂がゼロなので侵食が常に最大になるためで、
+   * 流入側の河床を固定するのは地形モデルでよく使われる境界条件の与え方。
+   * プレイヤーの砂の上げ下げには掛からないので、水源の地形は自由に変えられる。
+   */
+  inflowGuardReach: number;
 
   // --- 侵食・運搬・堆積 ---
   /** 水の密度 [kg/m^3] */
@@ -147,6 +156,7 @@ export const DEFAULT_PARAMS: SimParams = {
 
   circulationEnabled: false,
   circulationSpread: 0,
+  inflowGuardReach: 0,
 
   density: 1000,
   criticalShear: 12,

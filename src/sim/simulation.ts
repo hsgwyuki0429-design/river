@@ -64,6 +64,19 @@ export class Simulation {
   presetId = 'custom';
   randomSeed = 0;
   private oxbowTimer = 0;
+  /**
+   * 水源まわりで流れによる侵食を弱める係数 0..1（中心 0 → 保護範囲の外 1）。
+   *
+   * 土砂を含まない水が動く河床へ入ると、その入口は必ず掘れ続ける。
+   * 運搬能力に対して土砂がゼロなので侵食が常に最大になるためで、
+   * 実際に水源セルは初期比 -1.15m まで沈んだ（水路の深さは 0.36m）。
+   * 地形モデルではこれを流入側の境界条件として与える必要があり、
+   * ここでは入口の河床を固定する側の扱いを採る。
+   * プレイヤーの砂の上げ下げには掛けないので、水源の地形は自由に変えられる。
+   */
+  private inflowGuard: Float32Array;
+  /** inflowGuard を作り直すかの判定に使う、水源の位置と半径の署名 */
+  private inflowGuardKey = '';
 
   readonly stats: StepStats = {
     waterVolume: 0,
@@ -91,6 +104,46 @@ export class Simulation {
     this.circulationWaterByColumn = new Float64Array(width);
     this.circulationSuspendedSedimentByColumn = new Float64Array(width);
     this.circulationBedloadSedimentByColumn = new Float64Array(width);
+    this.inflowGuard = new Float32Array(width * height).fill(1);
+  }
+
+  /**
+   * 水源まわりの侵食保護係数を作る。水源は移動できるので、
+   * 位置か半径が変わったときだけ作り直す。
+   */
+  private updateInflowGuard(): void {
+    const reachScale = this.params.inflowGuardReach;
+    let key = `${reachScale}|`;
+    for (const s of this.sources) key += `${s.x},${s.y},${s.radius};`;
+    if (key === this.inflowGuardKey) return;
+    this.inflowGuardKey = key;
+    const g = this.grid;
+    const guard = this.inflowGuard;
+    guard.fill(1);
+    if (!(reachScale > 0)) return;
+    for (const src of this.sources) {
+      // 水を落とす範囲そのものは完全に固定し、その外へなだらかに戻す。
+      // 境目で段差を作ると、穴がその外側へ移るだけになる。
+      const inner = src.radius;
+      const reach = Math.max(inner + 2, src.radius * reachScale);
+      const span = reach - inner;
+      const x0 = Math.max(0, Math.floor(src.x - reach));
+      const x1 = Math.min(g.width - 1, Math.ceil(src.x + reach));
+      const y0 = Math.max(0, Math.floor(src.y - reach));
+      const y1 = Math.min(g.height - 1, Math.ceil(src.y + reach));
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const dx = x + 0.5 - src.x;
+          const dy = y + 0.5 - src.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= reach) continue;
+          const t = dist <= inner ? 0 : (dist - inner) / span;
+          const f = t * t * (3 - 2 * t);
+          const i = y * g.width + x;
+          if (f < guard[i]) guard[i] = f;
+        }
+      }
+    }
   }
 
   get cellArea(): number {
@@ -174,6 +227,7 @@ export class Simulation {
     this.stats.erodedVolume = 0;
     this.stats.depositedVolume = 0;
 
+    this.updateInflowGuard();
     const n = this.computeSubsteps(dt);
     const h = dt / n;
     for (let i = 0; i < n; i++) this.substep(h);
@@ -665,6 +719,7 @@ export class Simulation {
     const bedload = g.bedloadSediment;
     const area = this.cellArea;
     const morph = p.morphologicalTimeScale;
+    const guard = this.inflowGuard;
     const inv2dx = 1 / (2 * p.cellSize);
 
     let eroded = 0;
@@ -721,7 +776,7 @@ export class Simulation {
           // --- 侵食 ---
           const excess = shear - p.criticalShear;
           if (excess > 0) {
-            let e = p.erosionRate * excess * g.erodibility[i] * morph * h;
+            let e = p.erosionRate * excess * g.erodibility[i] * guard[i] * morph * h;
             const rateCap = p.maxErosionRate * morph * h;
             if (e > rateCap) e = rateCap;
             const deficit = capacity - s;
@@ -755,7 +810,8 @@ export class Simulation {
           Math.min(1, (speed - p.curvatureMinSpeed) / Math.max(0.05, 0.4 - p.curvatureMinSpeed)),
         );
         if (p.meanderDynamics && bedloadExcess > 0 && mobility > 0 && morph > 0) {
-          let e = p.bedloadRate * bedloadExcess * g.erodibility[i] * mobility * morph * h;
+          let e =
+            p.bedloadRate * bedloadExcess * g.erodibility[i] * guard[i] * mobility * morph * h;
           const available = bed[i] - rock[i];
           const cap = p.maxErosionRate * 0.35 * morph * h;
           // 掃流砂も流れが運べる量まで。静水や極低速域で在庫だけ増えるのを防ぐ。
@@ -870,6 +926,7 @@ export class Simulation {
           p.bankErosionRate *
           excess *
           g.erodibility[outer] *
+          this.inflowGuard[outer] *
           (1 + p.curvatureErosionGain * Math.abs(sec) * p.cellSize) *
           Math.min(2, d / p.bankWetDepth) *
           Math.min(2, speed) *

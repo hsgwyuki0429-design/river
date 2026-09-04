@@ -5,6 +5,7 @@
  */
 
 import { Simulation } from '../sim/simulation.ts';
+import type { TerrainGrid } from '../sim/grid.ts';
 import { applyTerrainOps, type TerrainOp } from '../sim/terrain.ts';
 import type { SimParams } from '../sim/types.ts';
 import { ObjectiveTracker } from './objectives.ts';
@@ -53,6 +54,8 @@ export const SANDBOX_STAGE: StageDef = {
   circulationInitialWater: 90,
   params: {
     circulationEnabled: true,
+    // 水が出てくる所が土砂を含まない水に掘られ続けるのを防ぐ
+    inflowGuardReach: 1.8,
     // 曲率・二次流・河岸侵食・内岸砂州・掃流砂を有効にして、
     // 川幅方向（横方向）の侵食と堆積による流路の移り変わりを観察できるようにする
     meanderDynamics: true,
@@ -94,17 +97,22 @@ export const SANDBOX_STAGE: StageDef = {
  * 5. 格子サイズを固定する
  *    端末の品質設定で盤面の縦横比が変わると現象の起き方まで変わるため。
  *
- * 実測の推移（川の時間、1ステップ5.9msで実効ほぼ1倍）:
- *    60秒  蛇行度 2.59（最大）
- *   180秒  三日月湖が現れる
- *   270秒  三日月湖 3個
- *   以降   切断と再成長を繰り返す
+ * 6. 砂の層を有限にする
+ *    水源のように土砂を含まない水が入る所は、運搬能力に対して土砂がゼロなので
+ *    侵食が常に最大になり、際限なく掘れる（水源セルが初期比 -1.15m まで沈んだ。
+ *    水路の深さは 0.36m）。inflowGuardReach で入口の河床を固定し、
+ *    alluviumThickness でどこも層厚より深くは掘れないようにした。
+ *
+ * 実測の推移（川の時間、1ステップ約4〜6msで実効ほぼ1倍）:
+ *    60秒  蛇行度 2.40（最大）
+ *   270秒  三日月湖が現れ、以降は残り続ける
+ *   全体を通して掘れる深さは 0.5m まで、水源セルは動かない
  */
 export const MEANDER_SANDBOX_STAGE: StageDef = {
   id: 'meander-sandbox',
   name: '蛇行観察',
   subtitle: '曲がりが育ち、切れて、三日月湖が残る',
-  hint: '1分ほどで曲がりが最大になり、3分ほどで首が切れて三日月湖が残る。そのあとも切断と再成長を繰り返す。',
+  hint: '1分ほどで曲がりが最大になり、そのあと首が切れて三日月湖が残る。切断と再成長を繰り返す。',
   terrain: [
     { type: 'slope', high: 3.2, low: 2.2, dir: 'down' },
     { type: 'noise', amplitude: 0.035, scale: 7, seed: 76123, octaves: 3 },
@@ -147,9 +155,12 @@ export const MEANDER_SANDBOX_STAGE: StageDef = {
   seed: 76123,
   gridWidth: 96,
   gridHeight: 124,
+  // 砂の層はこの厚さまで。水が出てくる所が際限なく掘れるのを止める
+  alluviumThickness: 0.5,
   params: {
     meanderDynamics: true,
     circulationEnabled: false,
+    inflowGuardReach: 1.8,
     morphologicalTimeScale: 30,
     criticalShear: 8,
     erosionRate: 2.8e-5,
@@ -170,6 +181,7 @@ export function createWorld(stage: StageDef, opts: WorldOptions): World {
   });
 
   applyTerrainOps(sim.grid, stage.terrain);
+  applyAlluviumFloor(sim.grid, stage.alluviumThickness);
 
   sim.sources = stage.sources.map((s) => ({
     id: s.id,
@@ -190,6 +202,22 @@ export function createWorld(stage: StageDef, opts: WorldOptions): World {
   return { sim, stage: stage.id === SANDBOX_STAGE.id ? null : stage, tracker };
 }
 
+/**
+ * 砂の層を有限にして、これ以上掘れない底（岩盤）を作る。
+ *
+ * 土砂を含まない水が入ってくる所は、運搬能力に対して土砂がゼロなので
+ * 侵食が常に最大になり、際限なく掘れてしまう。侵食を局所的に止めても
+ * 穴が場所を変えるだけなので、深さそのものに底を与える。
+ * 'rock' で置いた硬い場所の岩盤は下げない。
+ */
+function applyAlluviumFloor(grid: TerrainGrid, thickness: number | undefined): void {
+  if (thickness === undefined || !(thickness > 0)) return;
+  for (let i = 0; i < grid.size; i++) {
+    const floor = grid.bedHeight[i] - thickness;
+    if (floor > grid.bedrockHeight[i]) grid.bedrockHeight[i] = floor;
+  }
+}
+
 /** 地形と水を初期状態へ戻す */
 export function resetWorld(world: World, stage: StageDef): void {
   const { sim } = world;
@@ -200,6 +228,7 @@ export function resetWorld(world: World, stage: StageDef): void {
   sim.grid.depositedSediment.fill(0);
   sim.grid.drain.fill(0);
   applyTerrainOps(sim.grid, stage.terrain);
+  applyAlluviumFloor(sim.grid, stage.alluviumThickness);
   sim.seedCirculation(stage.circulationInitialWater ?? 0);
   sim.inflowScale = stage.initialInflow;
   sim.resetBudget();
