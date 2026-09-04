@@ -2,3 +2,6 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# 使い捨ての計測・診断スクリプト（アサーションのない実験用）
+test/_*.test.ts
