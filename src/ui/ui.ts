@@ -299,7 +299,7 @@ export class GameUI {
       <button class="big-btn primary" data-act="sandbox">箱庭をはじめる
         <small>制限なし。保存・読み込み・水源の移動ができます</small></button>
       <button class="big-btn" data-act="meander">蛇行観察をはじめる
-        <small>長い氾濫原で有限の水と砂が上下循環します</small></button>
+        <small>曲がりが育ち、切れて、三日月湖が残るまでを数分で見られます</small></button>
       ${hasSave() ? '<button class="big-btn" data-act="load">保存した地形を読み込む</button>' : ''}
       <h2>操作</h2>
       <p>・指1本でなぞる：砂を盛る／削る（長く押すほど大きく変化）<br />

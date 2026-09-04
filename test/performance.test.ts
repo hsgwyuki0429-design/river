@@ -42,11 +42,15 @@ describe('シミュレーション負荷', () => {
     }, 120000);
   }
 
-  it('蛇行観察プリセットをモバイル低品質で30fps予算内に収める', () => {
+  it('蛇行観察プリセットを30fps予算内に収める', () => {
+    // このプリセットは品質設定に依らず格子を固定している（蛇行の見え方が端末で変わらないように）。
+    // 一番弱い端末の maxSubsteps で、その固定格子が予算に収まることを確かめる。
     const q = QUALITY_PRESETS[0];
     const world = createWorld(MEANDER_SANDBOX_STAGE, {
-      width: q.width,
-      height: q.height * (MEANDER_SANDBOX_STAGE.gridHeightMultiplier ?? 1),
+      width: MEANDER_SANDBOX_STAGE.gridWidth ?? q.width,
+      height:
+        MEANDER_SANDBOX_STAGE.gridHeight ??
+        Math.round(q.height * (MEANDER_SANDBOX_STAGE.gridHeightMultiplier ?? 1)),
       cellSize: CELL_SIZE,
       params: { maxSubsteps: q.maxSubsteps },
     });

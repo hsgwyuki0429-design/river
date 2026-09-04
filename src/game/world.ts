@@ -69,24 +69,42 @@ export const SANDBOX_STAGE: StageDef = {
 /**
  * 蛇行の成長と河道切断を、待たずに観察するためのプリセット。
  *
- * 直線から蛇行が自然発生するのを待つと川の時間で何十分もかかるため、
- * 初期形状としてあらかじめ強く蛇行した流路を刻み、そのうち1つを
- * 「首の細いループ」にしてある。切断が起きやすい状態から始める。
+ * 設計の根拠はすべて実測にもとづく。
  *
- * 循環する水を絞ってあるのは、水が多いと氾濫原へ広がって流路が
- * まとまらず、曲がりも切断も起きなくなるため（実測で確認）。
+ * 1. 初期形状を作り込む
+ *    直線から蛇行が自然発生するのを待つと川の時間で何十分もかかる。
+ *    あらかじめ強く蛇行させ、そのうち1つを「首の細いループ」にして
+ *    切断が起きやすい状態から始める。
  *
- * 実測の目安（川の時間）:
- *   30秒  蛇行度 1.3
- *   90秒  蛇行度 1.7 まで急成長
- *   150〜420秒  三日月湖がたびたび現れる
- *   330秒  蛇行度 1.8 前後で頭打ち
+ * 2. 盤面を横長にする
+ *    蛇行度が 1.8 で頭打ちになるのは物理ではなく盤面幅による幾何的な制約。
+ *    曲がりが左右へ振れる余地がないだけだった。
+ *    （幅64で1.81 → 幅112で2.68。セル数は同じでも横長にするほど伸びる）
+ *
+ * 3. 循環ではなく開放系にする
+ *    循環方式だと三日月湖ができるたびにそこへ水が閉じ込められ、
+ *    有限の循環水が本流から失われて川がバラバラに崩壊する
+ *    （最大連結成分の割合が 100%→13% まで低下）。
+ *    上流から供給し続けると 99〜100% を保つ。
+ *
+ * 4. 地形変化倍率は上げすぎない
+ *    上げるほど曲がりは速く育つが、逆に切断が起きなくなる
+ *    （×30で三日月湖180秒、×60で270秒、×100では現れない）。
+ *
+ * 5. 格子サイズを固定する
+ *    端末の品質設定で盤面の縦横比が変わると現象の起き方まで変わるため。
+ *
+ * 実測の推移（川の時間、1ステップ5.9msで実効ほぼ1倍）:
+ *    60秒  蛇行度 2.59（最大）
+ *   180秒  三日月湖が現れる
+ *   270秒  三日月湖 3個
+ *   以降   切断と再成長を繰り返す
  */
 export const MEANDER_SANDBOX_STAGE: StageDef = {
   id: 'meander-sandbox',
   name: '蛇行観察',
-  subtitle: '強く曲がった流路から、切断と三日月湖まで',
-  hint: '最初から大きく蛇行している。90秒ほどで曲がりが育ち、そのあと首の細い所が切れて三日月湖が残る。',
+  subtitle: '曲がりが育ち、切れて、三日月湖が残る',
+  hint: '1分ほどで曲がりが最大になり、3分ほどで首が切れて三日月湖が残る。そのあとも切断と再成長を繰り返す。',
   terrain: [
     { type: 'slope', high: 3.2, low: 2.2, dir: 'down' },
     { type: 'noise', amplitude: 0.035, scale: 7, seed: 76123, octaves: 3 },
@@ -97,7 +115,7 @@ export const MEANDER_SANDBOX_STAGE: StageDef = {
         [0.34, 0.08],
         [0.68, 0.18],
         [0.3, 0.28],
-        // ここが首の細いループ。入口と出口が y 方向に近い
+        // 首の細いループ。入口と出口が y 方向に近く、切断が起きやすい
         [0.46, 0.36],
         [0.84, 0.37],
         [0.9, 0.4],
@@ -114,9 +132,10 @@ export const MEANDER_SANDBOX_STAGE: StageDef = {
     },
     { type: 'erodibility', x: 0, y: 0, w: 1, h: 1, value: 1 },
   ],
-  sources: [{ id: 'pump', x: 0.5, y: 0.01, radius: 0.055, maxRate: 0.9 }],
+  sources: [{ id: 'spring', x: 0.5, y: 0.01, radius: 0.05, maxRate: 1.6 }],
   zones: [],
-  openBoundary: { left: false, right: false, top: false, bottom: false },
+  // 開放系。上流から供給し続け、下端から抜ける
+  openBoundary: { left: false, right: false, top: false, bottom: true },
   sandBudget: null,
   targetTime: 0,
   timeLimit: null,
@@ -124,13 +143,13 @@ export const MEANDER_SANDBOX_STAGE: StageDef = {
   minInflow: 0,
   success: [],
   failure: [],
-  presetId: 'meander-v2',
+  presetId: 'meander-v3',
   seed: 76123,
-  gridHeightMultiplier: 2,
-  circulationInitialWater: 20,
+  gridWidth: 96,
+  gridHeight: 124,
   params: {
     meanderDynamics: true,
-    circulationEnabled: true,
+    circulationEnabled: false,
     morphologicalTimeScale: 30,
     criticalShear: 8,
     erosionRate: 2.8e-5,

@@ -10,7 +10,15 @@ import { STAGES } from '../src/game/stages.ts';
  */
 describe('長時間の安定性', () => {
   it('循環・曲率・掃流砂を有効にした150秒ランダム操作でも保存則を保つ', () => {
-    const world = createWorld(MEANDER_SANDBOX_STAGE, {
+    // 蛇行観察プリセットは開放系（上流から供給し下端から抜ける）なので、
+    // 循環時の保存則を確かめるここでは、同じ物理のまま循環系に組み替える。
+    const stage = {
+      ...MEANDER_SANDBOX_STAGE,
+      openBoundary: { left: false, right: false, top: false, bottom: false },
+      circulationInitialWater: 24,
+      params: { ...MEANDER_SANDBOX_STAGE.params, circulationEnabled: true },
+    };
+    const world = createWorld(stage, {
       width: 32,
       height: 96,
       cellSize: CELL_SIZE,

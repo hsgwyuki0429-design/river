@@ -122,8 +122,9 @@ export class Session {
   private buildWorld(stage: StageDef): World {
     const q = QUALITY_PRESETS[this.qualityIndex];
     return createWorld(stage, {
-      width: q.width,
-      height: Math.round(q.height * (stage.gridHeightMultiplier ?? 1)),
+      // 格子サイズを固定するステージは端末の品質設定に依らない
+      width: stage.gridWidth ?? q.width,
+      height: stage.gridHeight ?? Math.round(q.height * (stage.gridHeightMultiplier ?? 1)),
       cellSize: CELL_SIZE,
       params: { maxSubsteps: q.maxSubsteps },
     });

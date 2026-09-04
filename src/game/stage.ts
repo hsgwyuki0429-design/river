@@ -113,6 +113,13 @@ export interface StageDef {
   seed?: number;
   /** 通常品質に対する縦セル数倍率 */
   gridHeightMultiplier?: number;
+  /**
+   * 格子サイズを固定する（端末の品質設定に依らない）。
+   * 決まった現象を決まった時間で観察させるプリセット用。
+   * 指定すると gridHeightMultiplier より優先される。
+   */
+  gridWidth?: number;
+  gridHeight?: number;
   /** 循環タンクへ与える有限な初期水量 [m^3] */
   circulationInitialWater?: number;
 }
