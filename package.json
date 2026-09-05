@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "node scripts/observatory-smoke.mjs",
-    "smoke:legacy": "node scripts/smoke.mjs"
+    "smoke:legacy": "node scripts/smoke.mjs",
+    "smoke:terrain": "node scripts/terrain-smoke.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.1",

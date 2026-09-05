@@ -16,3 +16,27 @@ dialog{width:min(550px,calc(100% - 32px));max-height:85svh;padding:35px;border:1
 
 .map-wrap:has(canvas[data-portrait=true]) .north-mark svg{transform:rotate(90deg)}
 
+.terrain-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:0 0 14px; padding:12px; border:1px solid var(--line); border-radius:6px; background:#f0f3e9; }
+.terrain-tools { display:flex; border:1px solid #cdd6c4; border-radius:4px; overflow:hidden; background:var(--paper); }
+.terrain-tools button { font-size:11px; padding:10px 13px; min-height:38px; border-right:1px solid #dbe1d3; }
+.terrain-tools button:last-child { border:0; }
+.terrain-tools button[aria-pressed=true] { background:#375f49; color:#fff; }
+.terrain-controls>label { display:flex; align-items:center; gap:6px; font-size:10px; color:#5e7058; }
+.terrain-controls select { padding:8px; font-size:11px; }
+.terrain-controls>button { font-size:10px; padding:10px 8px; min-height:38px; }
+.terrain-controls>p { flex-basis:100%; margin:0; color:#617259; font-size:10px; line-height:1.7; }
+#landscape.editing { touch-action:none; cursor:crosshair; }
+.elevation-key { position:absolute; bottom:51px; left:22px; display:flex; align-items:center; flex-wrap:wrap; gap:6px; background:#fbfcefdb; padding:6px 8px; border-radius:4px; pointer-events:none; font-size:8px; color:#5b6b51; }
+.elevation-key i { width:56px; height:5px; background:linear-gradient(90deg,#4a8a7c,#e2e5d2,#b2854d); border-radius:2px; }
+.elevation-key output { font-variant-numeric:tabular-nums; }
+.map-wrap .event { bottom:84px; }
+@media(max-width:760px) {
+  .terrain-controls { padding:9px; gap:7px; }
+  .terrain-tools { flex-basis:100%; }
+  .terrain-tools button { flex:1; font-size:11px; min-height:40px; padding:9px 7px; }
+  .terrain-controls>label { font-size:9px; gap:4px; }
+  .terrain-controls>button { font-size:9px; padding:8px 5px; }
+  .terrain-controls>p { font-size:9px; }
+  .elevation-key { left:12px; right:12px; width:max-content; max-width:calc(100% - 24px); font-size:7px; }
+}
+

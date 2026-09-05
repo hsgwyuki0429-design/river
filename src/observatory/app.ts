@@ -1,6 +1,8 @@
 import './style.css';
 import { RiverModel, PRESETS, SAVE_KEY, STEP, END_YEAR, decodeSave, length, sinuosity, type RiverState } from './model.ts';
 import { Landscape, type Layers } from './renderer.ts';
+import { flatTerrain, paintTerrain, type TerrainField, type TerrainTool } from './terrain.ts';
+import { TerrainInput } from './terrain-input.ts';
 
 const icon = (name: string, size = 20) => {
   const paths: Record<string, string> = {
@@ -43,11 +45,21 @@ document.getElementById('app')!.innerHTML = `
     </aside>
     <section class="workspace" aria-label="川の変遷を観察">
       <div class="workspace-heading"><div><span class="eyebrow">LIVE LANDSCAPE</span><h2 id="field-title">草原の川 <span>— 自由に流れる氾濫原</span></h2></div><button id="capture" class="icon-button" aria-label="風景を画像として保存" title="風景を画像として保存">${icon('camera')}</button></div>
-      <div class="map-wrap"><canvas id="landscape" role="img" aria-label="蛇行する川と、過去の流路・三日月湖の俯瞰図"></canvas>
+      <section class="terrain-controls" aria-label="地形の編集">
+        <div class="terrain-tools" role="group" aria-label="地形の道具">
+          <button id="tool-observe" aria-pressed="true">観察</button><button id="tool-raise" aria-pressed="false">盛る ＋</button><button id="tool-lower" aria-pressed="false">削る −</button><button id="tool-restore" aria-pressed="false">ならす</button>
+        </div>
+        <label>ブラシ<select id="terrain-radius"><option value="80">小</option><option value="140" selected>中</option><option value="240">大</option></select></label>
+        <label>強さ<select id="terrain-strength"><option value="0.5">0.5 m</option><option value="1.5" selected>1.5 m</option><option value="3">3 m</option></select></label>
+        <button id="terrain-undo" disabled>ひと筆戻す</button><button id="terrain-clear">地形を戻す</button>
+        <p id="terrain-hint">盛る・削るで地形をなぞり、再生すると川の変化を観察できます。</p>
+      </section>
+      <div class="map-wrap"><canvas id="landscape" role="img" tabindex="0" aria-describedby="terrain-hint" aria-label="蛇行する川と、過去の流路・三日月湖の俯瞰図"></canvas>
         <div class="map-top"><span class="live-badge"><i></i><span id="live-label">観察中</span></span><span class="map-location">仮想の氾濫原 <span>/</span> <span id="seed-label">042</span></span></div>
         <div class="north-mark" aria-hidden="true"><span>N</span><svg width="16" height="33" viewBox="0 0 16 33"><path d="M8 0 1 22l7-5 7 5Z" fill="#53634e"/><path d="M8 4v27" stroke="#53634e"/></svg></div>
         <div class="map-legend"><span><i class="water-dot"></i>本流</span><span><i class="sand-dot"></i>内岸の砂州</span><span><i class="oxbow-dot"></i>旧流路・三日月湖</span></div>
         <div id="event" class="event" role="status" hidden></div>
+        <div class="elevation-key"><span>低く</span><i></i><span>高く</span><output id="elevation-range">−12 ～ +12 m</output><span>初期地形からの変更量</span></div>
       </div>
       <div class="transport"><div class="playback-row"><button id="play" class="play-button" aria-label="一時停止">${icon('pause')}</button><div class="year-block"><output id="year">0</output><span>年経過</span></div><div class="speed-control"><label for="speed">早送り</label><select id="speed"><option value="5">5 年 / 秒</option><option value="20" selected>20 年 / 秒</option><option value="80">80 年 / 秒</option></select></div><button id="latest" class="text-button" hidden>最新へ ${icon('arrow', 15)}</button><button id="advance" class="advance-button">100 年進める ${icon('arrow', 16)}</button></div>
         <div class="timeline-wrap"><input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="過去の流路を観察する時間" /><div class="timeline-labels"><span id="timeline-start">0 年</span><span id="timeline-hint">時間を戻して、川の記憶をたどる</span><span id="timeline-end">0 年</span></div></div>
@@ -55,7 +67,7 @@ document.getElementById('app')!.innerHTML = `
       <div class="insights"><div class="stat"><span>流路の長さ</span><strong id="length">2.2 <small>km</small></strong></div><div class="stat"><span>蛇行度 <span title="流路の長さ ÷ 上流と下流を結ぶ直線距離">ⓘ</span></span><strong id="sinuosity">1.20 <small>倍</small></strong></div><div class="stat"><span>生まれた三日月湖</span><strong id="oxbows">0 <small>か所</small></strong></div><div class="observation"><span class="eyebrow">FIELD NOTES</span><p id="note">外側の岸が削れ、内側に砂がたまる。<br>小さな曲がりが、ゆっくり育っていきます。</p></div></div>
     </section>
   </main>
-  <dialog id="about-dialog"><button id="close-about" class="dialog-close" aria-label="説明を閉じる">×</button><p class="eyebrow">ABOUT THIS LANDSCAPE</p><h2>川の一生を、観察する。</h2><p>これは実在の川の昔の映像ではなく、自由に蛇行する川の変遷を計算するアプリです。再生すると川岸が動き、蛇行の首がつながると短い流路へ切り替わり、旧流路が三日月湖として残ります。</p><p>曲率と上流からの影響で河道を移動させる Howard–Knutson 系の簡略モデルを使っています。川の形は毎回計算され、切断の時刻は決められていません。</p><p>表示年数・流量倍率は未校正のモデル上の目安です。川幅は流量に応じて一様に設定します。水深、洪水の浸水域、土砂収支、植生の成長は計算しません。砂州・流れの矢印・旧流路の緑化・地形の背景は理解を助ける表現です。</p><p>「保存」はこのブラウザに現在の川を保存します。復元後の時間軸は保存した時点から始まります。元の砂の操作と保存データは「砂の実験室」で利用できます。</p><a href="https://doi.org/10.1029/WR020i011p01659" target="_blank" rel="noreferrer">モデルの参考文献 ↗</a><p class="dialog-tip">Space：再生 / 一時停止 · 時間軸：過去を観察 · 再生：過去から続けて見る</p></dialog>
+  <dialog id="about-dialog"><button id="close-about" class="dialog-close" aria-label="説明を閉じる">×</button><p class="eyebrow">ABOUT THIS LANDSCAPE</p><h2>川の一生を、観察する。</h2><p>これは実在の川の昔の映像ではなく、自由に蛇行する川の変遷を計算するアプリです。再生すると川岸が動き、蛇行の首がつながると短い流路へ切り替わり、旧流路が三日月湖として残ります。</p><p>「盛る」「削る」で地形をなぞれます。「ならす」はなぞった場所を初期の高さへ近づけます。茶色は盛った場所、青緑は掘った場所で、輪郭線は高さの変更量が2 m刻みの線です。編集後に再生すると、高くした岸は動きにくく、低地へ川が寄る様子を観察できます。矢印キーでブラシ位置を移動し、Enterでも編集できます。</p><p>曲率と上流からの影響で河道を移動させる Howard–Knutson 系モデルに、編集した地形の勾配と高い岸への抵抗を加えています。川の形は毎回計算され、切断の時刻は決められていません。</p><p>表示年数・流量倍率は未校正の目安です。地形の変更量を計算に使いますが、水深、洪水の浸水域、土砂収支は解きません。盛った地形の侵食や決壊を再現する機能ではありません。砂州・矢印・旧流路の緑化・背景の細い模様は理解を助ける表現です。</p><p>「保存」は現在の川と編集した地形を保存します。復元後の時間軸は保存時点から始まります。編集前後の地形は、この観察中の時間軸で見比べられます。</p><a href="https://doi.org/10.1029/WR020i011p01659" target="_blank" rel="noreferrer">モデルの参考文献 ↗</a><p class="dialog-tip">Space：再生 / 一時停止 · 時間軸：過去を観察 · 再生：過去から続けて見る</p></dialog>
   <div id="notification" role="status" hidden></div>`;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -70,6 +82,24 @@ const layers: Layers = { trails: true, flow: true, terrain: true };
 const landscape = new Landscape($<HTMLCanvasElement>('landscape'));
 const isHistory = () => viewIndex < history.length - 1;
 const displayed = () => isHistory() ? history[viewIndex] : model.state;
+let strokeBefore: RiverState | null = null;
+let terrainUndo: TerrainField[] = [];
+const terrainInput = new TerrainInput(landscape, {
+  canEdit: () => !playing && !isHistory() && model.state.year < END_YEAR,
+  begin: () => { strokeBefore = model.snapshot(); },
+  paint: (points, radius, tool) => { model.state.terrain = paintTerrain(model.state.terrain, points, radius, Number($<HTMLSelectElement>('terrain-strength').value), tool); dirty = true; },
+  finish: cancelled => {
+    if (!strokeBefore) return;
+    if (cancelled) { model.state.terrain = strokeBefore.terrain; dirty = true; }
+    else if (model.state.terrain !== strokeBefore.terrain) {
+      terrainUndo.push(strokeBefore.terrain); terrainUndo = terrainUndo.slice(-20);
+      history.push(strokeBefore, model.snapshot()); viewIndex = history.length - 1;
+      notify('地形を変更しました。再生すると川が新しい地形に応じて動きます');
+    }
+    strokeBefore = null; sync();
+  },
+  changed: () => { dirty = true; },
+});
 
 function notify(message: string): void {
   $('notification').textContent = message; $('notification').hidden = false;
@@ -102,8 +132,14 @@ function sync(): void {
   $('event').hidden = !event;
   const eventText = event ? `${Math.floor(event.born)} 年 — 流路が切り替わり、三日月湖が生まれました` : '';
   if ($('event').textContent !== eventText) $('event').textContent = eventText;
+  for (const tool of ['raise', 'lower', 'restore']) $<HTMLButtonElement>(`tool-${tool}`).disabled = past || ended;
+  for (const id of ['terrain-radius', 'terrain-strength']) $<HTMLSelectElement>(id).disabled = past || ended;
+  $<HTMLButtonElement>('terrain-undo').disabled = past || ended || terrainUndo.length === 0 || strokeBefore !== null;
+  $<HTMLButtonElement>('terrain-clear').disabled = past || ended || strokeBefore !== null;
+  $('terrain-hint').textContent = past ? '過去の地形を表示しています。最新へ戻ると編集できます。' : terrainInput.tool ? '地形をなぞって編集。再生で川の変化を観察。矢印キー＋Enterでも操作できます。' : '盛る・削るで地形をなぞり、再生すると川の変化を観察できます。';
 }
 function reset(preset = PRESETS.find(p => p.id === $<HTMLSelectElement>('preset').value) ?? PRESETS[0]): void {
+  stopEditing(); terrainUndo = [];
   seed = preset.seed; model = new RiverModel(seed, preset.flow, preset.erodibility);
   history = [model.snapshot()]; viewIndex = 0; replayYear = 0; accumulator = 0; lastCutoffs = 0; targetYear = null;
   playing = !reducedMotion; dirty = true; $('event').hidden = true;
@@ -112,6 +148,7 @@ function reset(preset = PRESETS.find(p => p.id === $<HTMLSelectElement>('preset'
   $('preset-description').textContent = preset.description; sync();
 }
 function toggle(): void {
+  stopEditing();
   if (model.state.year >= END_YEAR && !isHistory()) {
     if (history.length === 1) { reset(); playing = false; }
     else { viewIndex = 0; replayYear = history[0].year; }
@@ -119,6 +156,25 @@ function toggle(): void {
   playing = !playing; targetYear = null; accumulator = 0; dirty = true; sync();
 }
 $('play').addEventListener('click', toggle);
+function stopEditing(): void {
+  terrainInput.cancel(); terrainInput.setTool(null);
+  for (const tool of ['observe', 'raise', 'lower', 'restore']) $(`tool-${tool}`).setAttribute('aria-pressed', String(tool === 'observe'));
+}
+for (const tool of ['observe', 'raise', 'lower', 'restore'] as const) {
+  $(`tool-${tool}`).addEventListener('click', () => {
+    playing = false; accumulator = 0; targetYear = null;
+    terrainInput.setTool(tool === 'observe' ? null : tool as TerrainTool);
+    for (const name of ['observe', 'raise', 'lower', 'restore']) $(`tool-${name}`).setAttribute('aria-pressed', String(name === tool));
+    sync();
+  });
+}
+$('terrain-radius').addEventListener('change', () => { terrainInput.radius = Number($<HTMLSelectElement>('terrain-radius').value); if (landscape.cursor) landscape.cursor.radius = terrainInput.radius; dirty = true; });
+function replaceTerrain(field: TerrainField): void {
+  playing = false; targetYear = null; accumulator = 0;
+  history.push(model.snapshot()); model.state.terrain = field; history.push(model.snapshot()); viewIndex = history.length - 1; dirty = true; sync();
+}
+$('terrain-undo').addEventListener('click', () => { const field = terrainUndo.pop(); if (field) { replaceTerrain(field); notify('直前の地形編集を戻しました'); } });
+$('terrain-clear').addEventListener('click', () => { terrainUndo.push(model.state.terrain); terrainUndo = terrainUndo.slice(-20); replaceTerrain(flatTerrain()); notify('川の形を保ち、地形を初期の高さへ戻しました'); });
 window.addEventListener('keydown', e => {
   if (e.code !== 'Space' || $<HTMLDialogElement>('about-dialog').open || (e.target as HTMLElement).closest('input,select,button,a,textarea')) return;
   e.preventDefault(); toggle();
@@ -133,17 +189,17 @@ for (const [id, key] of [['trails', 'trails'], ['flow-layer', 'flow'], ['terrain
   $(id).addEventListener('change', () => { layers[key] = range(id).checked; dirty = true; });
 }
 $('flood').addEventListener('click', () => { model.flood(); history[history.length - 1] = model.snapshot(); dirty = true; sync(); notify('20 年間、川岸の移動が速くなります'); });
-$('timeline').addEventListener('input', () => { viewIndex = Number(range('timeline').value); replayYear = history[viewIndex].year; playing = false; targetYear = null; accumulator = 0; dirty = true; sync(); });
+$('timeline').addEventListener('input', () => { stopEditing(); viewIndex = Number(range('timeline').value); replayYear = history[viewIndex].year; playing = false; targetYear = null; accumulator = 0; dirty = true; sync(); });
 $('latest').addEventListener('click', () => { viewIndex = history.length - 1; accumulator = 0; dirty = true; sync(); });
-$('advance').addEventListener('click', () => { viewIndex = history.length - 1; targetYear = Math.min(END_YEAR, model.state.year + 100); playing = true; accumulator = 0; sync(); });
+$('advance').addEventListener('click', () => { stopEditing(); viewIndex = history.length - 1; targetYear = Math.min(END_YEAR, model.state.year + 100); playing = true; accumulator = 0; sync(); });
 $('save').addEventListener('click', () => {
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify({ version: 1, seed, state: displayed() })); notify(`${Math.floor(displayed().year)} 年の川を、このブラウザに保存しました`); }
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify({ version: 2, seed, state: displayed() })); notify(`${Math.floor(displayed().year)} 年の川と地形を、このブラウザに保存しました`); }
   catch { notify('保存できませんでした。ブラウザの空き容量や設定を確認してください'); }
 });
 $('load').addEventListener('click', () => {
   try {
     const raw = localStorage.getItem(SAVE_KEY); if (!raw) { notify('保存した川はまだありません'); return; }
-    const saved = decodeSave(raw); seed = saved.seed; model = new RiverModel(seed); model.state = saved.state;
+    const saved = decodeSave(raw); stopEditing(); terrainUndo = []; seed = saved.seed; model = new RiverModel(seed); model.state = saved.state;
     history = [model.snapshot()]; viewIndex = 0; replayYear = model.state.year; playing = false; targetYear = null; accumulator = 0; lastCutoffs = model.state.cutoffs;
     const preset = PRESETS.find(p => p.seed === seed) ?? PRESETS[0];
     $<HTMLSelectElement>('preset').value = preset.id; $('seed-label').textContent = String(seed).padStart(3, '0');
@@ -164,7 +220,7 @@ let wasPlaying = false;
 $('about').addEventListener('click', () => { wasPlaying = playing; playing = false; sync(); $<HTMLDialogElement>('about-dialog').showModal(); });
 $('close-about').addEventListener('click', () => $<HTMLDialogElement>('about-dialog').close());
 $('about-dialog').addEventListener('close', () => { playing = wasPlaying; accumulator = 0; last = performance.now(); sync(); });
-document.addEventListener('visibilitychange', () => { last = performance.now(); accumulator = 0; });
+document.addEventListener('visibilitychange', () => { terrainInput.cancel(); last = performance.now(); accumulator = 0; });
 new ResizeObserver(() => { dirty = true; }).observe(landscape.canvas);
 
 function frame(now: number): void {
