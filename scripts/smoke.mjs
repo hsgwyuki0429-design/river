@@ -14,7 +14,8 @@ import { chromium, devices } from 'playwright';
  * デバッグ表示 → 自由モード → 保存/初期化/読み込み」まで通し、
  * JS エラーが出ないことと収支表示を確認する。
  */
-const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:4173/';
+const BASE_URL = new URL(process.env.BASE_URL || 'http://127.0.0.1:4173/');
+BASE_URL.searchParams.set('mode', 'sandbox');
 const OUT = process.argv[2] || '.';
 
 
@@ -26,7 +27,7 @@ const page = await context.newPage();
 page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 
-await page.goto(BASE_URL, { waitUntil: 'networkidle' });
+await page.goto(BASE_URL.href, { waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
 await page.screenshot({ path: OUT + '/shot-title.png' });
 
@@ -113,3 +114,4 @@ await page.waitForTimeout(800);
 
 console.log(JSON.stringify({ inflow1, state, debugText: debugText.slice(0, 700), saved, canLoad, errors }, null, 1));
 await browser.close();
+if (errors.length || !saved || !canLoad) throw new Error('Legacy smoke failed: ' + JSON.stringify({ errors, saved, canLoad }));
