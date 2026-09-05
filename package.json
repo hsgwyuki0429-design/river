@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "水と砂による河川地形シミュレーションゲーム",
+  "description": "蛇行・流路切断・三日月湖を早送りで観察する川の変遷アプリ",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/observatory-smoke.mjs",
+    "smoke:legacy": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.1",
