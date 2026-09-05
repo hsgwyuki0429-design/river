@@ -1,4 +1,5 @@
 import { channelWidth, curvature, distance, type Point, type RiverState } from './model.ts';
+import { TERRAIN, reliefAt, type TerrainField, type TerrainTool } from './terrain.ts';
 
 export interface Layers { trails: boolean; flow: boolean; terrain: boolean }
 export class Landscape {
@@ -7,6 +8,11 @@ export class Landscape {
   private scale = 1;
   private width = 1;
   private height = 1;
+  private worldTransform = new DOMMatrix();
+  private cachedTerrain: TerrainField | null = null;
+  private elevation = document.createElement('canvas');
+  private contours = new Path2D();
+  cursor: { point: Point; radius: number; tool: TerrainTool } | null = null;
   constructor(readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
     this.texture.width = 700; this.texture.height = 700;
@@ -24,6 +30,11 @@ export class Landscape {
     if (this.canvas.width !== Math.round(rect.width * dpr) || this.canvas.height !== Math.round(rect.height * dpr)) {
       this.canvas.width = Math.round(rect.width * dpr); this.canvas.height = Math.round(rect.height * dpr);
     }
+  }
+  screenToWorld(clientX: number, clientY: number): Point {
+    const rect = this.canvas.getBoundingClientRect();
+    const point = new DOMPoint(clientX - rect.left, clientY - rect.top).matrixTransform(this.worldTransform.inverse());
+    return { x: point.x, y: point.y };
   }
   draw(state: RiverState, history: RiverState[], layers: Layers, motion: number): void {
     this.resize();
@@ -57,6 +68,9 @@ export class Landscape {
     ctx.save(); ctx.translate(w / 2, h / 2 + 4); ctx.scale(this.scale, this.scale);
     if (portrait) ctx.rotate(Math.PI / 2);
     ctx.translate(-(minX + maxX) / 2, -(minY + maxY) / 2);
+    const transform = ctx.getTransform();
+    this.worldTransform = new DOMMatrix([transform.a / dpr, transform.b / dpr, transform.c / dpr, transform.d / dpr, transform.e / dpr, transform.f / dpr]);
+    this.drawElevation(state.terrain);
     const width = channelWidth(state.flow);
     if (layers.trails) {
       const before = history.filter(s => s.year < state.year);
@@ -100,6 +114,17 @@ export class Landscape {
       ctx.fillStyle = '#49604d'; ctx.font = `${9 / this.scale}px system-ui`; ctx.textAlign = 'center';
       ctx.fillText(label, 0, -17 / this.scale); ctx.restore();
     }
+    if (this.cursor) {
+      const { point, radius, tool } = this.cursor;
+      ctx.strokeStyle = tool === 'raise' ? '#976330' : tool === 'lower' ? '#266978' : '#5a6854';
+      ctx.fillStyle = tool === 'raise' ? '#ae774319' : '#529c9819';
+      ctx.lineWidth = 1.5 / this.scale; ctx.setLineDash([4 / this.scale, 4 / this.scale]);
+      ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+      ctx.save(); ctx.translate(point.x, point.y); if (portrait) ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = '#304638'; ctx.textAlign = 'center'; ctx.font = `${11 / this.scale}px system-ui`;
+      const value = reliefAt(state.terrain, point);
+      ctx.fillText(`${value >= 0 ? '+' : ''}${value.toFixed(1)} m`, 0, -radius - 10 / this.scale); ctx.restore();
+    }
     ctx.restore();
     ctx.fillStyle = '#415a4c'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
     const scaleMetres = this.scale * 200 > w * 0.28 ? 100 : 200;
@@ -108,6 +133,41 @@ export class Landscape {
     ctx.beginPath(); ctx.moveTo(sx, sy - 5); ctx.lineTo(sx, sy); ctx.lineTo(sx + bar, sy); ctx.lineTo(sx + bar, sy - 5); ctx.stroke();
     ctx.fillText(`${scaleMetres} m`, sx, sy - 10);
     ctx.textAlign = 'right'; ctx.fillText(`RIVER / ${Math.floor(state.year)} 年 · 概念モデル`, w - 22, h - 24);
+  }
+  private drawElevation(field: TerrainField): void {
+    const { cols, rows, cell, x: originX, y: originY } = TERRAIN;
+    if (field !== this.cachedTerrain) {
+      this.cachedTerrain = field;
+      this.elevation.width = cols; this.elevation.height = rows;
+      const image = new ImageData(cols, rows);
+      for (let i = 0; i < field.heights.length; i++) {
+        const h = field.heights[i], color = h > 0 ? [167, 114, 49] : [61, 119, 108];
+        image.data[i * 4] = color[0]; image.data[i * 4 + 1] = color[1]; image.data[i * 4 + 2] = color[2];
+        image.data[i * 4 + 3] = Math.min(170, Math.abs(h) * 24);
+      }
+      this.elevation.getContext('2d')!.putImageData(image, 0, 0);
+      this.contours = new Path2D();
+      // Marching squares over the same elevations sampled by the river model.
+      for (const level of [-10, -8, -6, -4, -2, 2, 4, 6, 8, 10]) {
+        for (let y = 0; y < rows - 1; y++) for (let x = 0; x < cols - 1; x++) {
+          const i = y * cols + x, values = [field.heights[i], field.heights[i + 1], field.heights[i + cols + 1], field.heights[i + cols]];
+          if (level < Math.min(...values) || level > Math.max(...values)) continue;
+          const corners = [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]];
+          const crossings: Point[] = [];
+          for (let edge = 0; edge < 4; edge++) {
+            const next = (edge + 1) % 4;
+            if ((values[edge] < level) === (values[next] < level)) continue;
+            const t = (level - values[edge]) / (values[next] - values[edge]);
+            crossings.push({ x: originX + (corners[edge][0] + t * (corners[next][0] - corners[edge][0])) * cell, y: originY + (corners[edge][1] + t * (corners[next][1] - corners[edge][1])) * cell });
+          }
+          for (let j = 0; j + 1 < crossings.length; j += 2) {
+            this.contours.moveTo(crossings[j].x, crossings[j].y); this.contours.lineTo(crossings[j + 1].x, crossings[j + 1].y);
+          }
+        }
+      }
+    }
+    this.ctx.drawImage(this.elevation, originX - cell / 2, originY - cell / 2, cols * cell, rows * cell);
+    this.ctx.strokeStyle = '#775c385e'; this.ctx.lineWidth = 0.7 / this.scale; this.ctx.stroke(this.contours);
   }
   private stroke(points: readonly Point[], color: string, width: number): void {
     if (points.length < 2) return;

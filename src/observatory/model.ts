@@ -5,6 +5,8 @@
  * Howard–Knutson family of models; see docs/observatory.md for assumptions.
  * No elapsed-time event triggers or prerecorded channel shapes are used.
  */
+import { flatTerrain, reliefAt, terrainAllowsCutoff, validTerrain, type TerrainField } from './terrain.ts';
+
 export interface Point { x: number; y: number }
 export interface Oxbow { points: Point[]; born: number; width: number }
 export interface RiverState {
@@ -15,6 +17,7 @@ export interface RiverState {
   flow: number;
   erodibility: number;
   floodUntil: number;
+  terrain: TerrainField;
 }
 export const STEP = 0.25;
 export const END_YEAR = 1200;
@@ -66,7 +69,7 @@ export function curvature(points: readonly Point[]): Float64Array {
 }
 
 /** Spatial hash avoids a quadratic scan; arc separation excludes adjacent banks. */
-export function findNeck(points: readonly Point[], width: number): [number, number] | null {
+export function findNeck(points: readonly Point[], width: number, canConnect: (a: Point, b: Point) => boolean = () => true): [number, number] | null {
   const threshold = width * 0.92, bins = new Map<string, number[]>();
   const arc = new Float64Array(points.length);
   for (let i = 1; i < points.length; i++) arc[i] = arc[i - 1] + distance(points[i - 1], points[i]);
@@ -74,7 +77,7 @@ export function findNeck(points: readonly Point[], width: number): [number, numb
     const p = points[j], bx = Math.floor(p.x / threshold), by = Math.floor(p.y / threshold);
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
       for (const i of bins.get(`${bx + dx},${by + dy}`) ?? []) {
-        if (arc[j] - arc[i] > width * 6 && distance(points[i], p) < threshold) return [i, j];
+        if (arc[j] - arc[i] > width * 6 && distance(points[i], p) < threshold && canConnect(points[i], p)) return [i, j];
       }
     }
     const key = `${bx},${by}`;
@@ -93,7 +96,7 @@ export class RiverModel {
       const x = REACH * i / 240, envelope = Math.sin(Math.PI * i / 240) ** 0.5;
       points.push({ x, y: envelope * (92 * Math.sin(x / 83 + phase) + 21 * Math.sin(x / 143 + phase * 2)) });
     }
-    this.state = { year: 0, points: resample(points), oxbows: [], cutoffs: 0, flow, erodibility, floodUntil: 0 };
+    this.state = { year: 0, points: resample(points), oxbows: [], cutoffs: 0, flow, erodibility, floodUntil: 0, terrain: flatTerrain() };
   }
 
   snapshot(): RiverState {
@@ -120,16 +123,26 @@ export class RiverModel {
       weights = weights * decay + 1;
       if (i < 2 || i > n - 3) { next.push({ ...p[i] }); continue; }
       const tx = p[i + 1].x - p[i - 1].x, ty = p[i + 1].y - p[i - 1].y;
-      const norm = Math.hypot(tx, ty);
+      const norm = Math.max(1e-9, Math.hypot(tx, ty));
       const taper = Math.min(1, arc / 150, (total - arc) / 150) ** 2;
-      const migration = rate * (-width * c[i] + 2.5 * weighted / weights) * slopeFactor;
+      // Local relief steers toward lower ground and resists migration uphill.
+      // The reference plain's downstream slope is already represented by the
+      // planform model; this term responds to the user's elevation changes.
+      const nx = ty / norm, ny = -tx / norm, probe = Math.max(40, width * 1.5);
+      const right = reliefAt(s.terrain, { x: p[i].x + nx * probe, y: p[i].y + ny * probe });
+      const left = reliefAt(s.terrain, { x: p[i].x - nx * probe, y: p[i].y - ny * probe });
+      const current = reliefAt(s.terrain, p[i]);
+      const nominal = rate * (-width * c[i] + 2.5 * weighted / weights) * slopeFactor;
+      const uphill = Math.max(0, (nominal >= 0 ? right : left) - current);
+      const downhill = -450 * (right - left) / (2 * probe) * s.flow ** 0.35;
+      const migration = nominal / (1 + 3 * uphill) + downhill;
       const move = Math.max(-SPACING * 0.15, Math.min(SPACING * 0.15, migration * STEP)) * taper;
       next.push({ x: p[i].x + move * ty / norm, y: p[i].y - move * tx / norm });
     }
     s.year = Math.min(END_YEAR, s.year + STEP);
     s.points = next;
     // Width determines bank contact; floods accelerate migration, not cutoff timing.
-    const neck = findNeck(s.points, width);
+    const neck = findNeck(s.points, width, (a, b) => terrainAllowsCutoff(s.terrain, a, b, 0.25 * s.flow * (flooded ? 2 : 1)));
     if (neck) {
       const [a, b] = neck;
       s.oxbows.push({ points: s.points.slice(a, b + 1).map(p => ({ ...p })), born: s.year, width });
@@ -148,10 +161,12 @@ export function decodeSave(raw: string): { state: RiverState; seed: number } {
   const s = data?.state;
   const finiteRange = (v: number, lo: number, hi: number) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
   const validPoints = (p: Point[], min: number) => Array.isArray(p) && p.length >= min && p.length <= 4000 && p.every(v => v && finiteRange(v.x, -10000, 10000) && finiteRange(v.y, -10000, 10000));
-  if (data.version !== 1 || !Number.isInteger(data.seed) || !s || !finiteRange(s.year, 0, END_YEAR) || s.year % STEP !== 0 ||
+  if (!data || (data.version !== 1 && data.version !== 2) || !Number.isInteger(data.seed) || !s || !finiteRange(s.year, 0, END_YEAR) || s.year % STEP !== 0 ||
       !finiteRange(s.flow, 0.5, 1.8) || !finiteRange(s.erodibility, 0.3, 1.8) || !finiteRange(s.floodUntil, 0, END_YEAR) ||
       !validPoints(s.points, 10) || !Array.isArray(s.oxbows) || s.oxbows.length > 200 || !Number.isInteger(s.cutoffs) || s.cutoffs !== s.oxbows.length ||
       s.oxbows.some(o => !o || !validPoints(o.points, 3) || !finiteRange(o.born, 0, s.year) || !finiteRange(o.width, 10, 100))) throw new Error('Invalid save');
   if (s.points.some((p, i) => i > 0 && distance(p, s.points[i - 1]) < 1e-6)) throw new Error('Degenerate channel');
+  if (data.version === 1 && s.terrain === undefined) s.terrain = flatTerrain();
+  if (!validTerrain(s.terrain)) throw new Error('Invalid terrain');
   return { state: s, seed: data.seed };
 }
